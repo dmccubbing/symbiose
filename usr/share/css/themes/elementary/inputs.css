@@ -3,11 +3,13 @@ textarea {
 }
 
 input[type="text"], input[type="password"], input[type="number"], input[type="email"] {
-	width: 170px;
 	border: 1px solid #b0b3ab;
 	-moz-border-radius: 4px;
 	-webkit-border-radius: 4px;
 	border-radius: 4px;
+}
+input[type="text"], input[type="password"], input[type="email"] {
+	width: 170px;
 }
 
 input[type="text"]:focus, input[type="password"]:focus,
@@ -16,7 +18,8 @@ input[type="number"]:focus, input[type="email"]:focus {
 	outline: none;
 }
 
-.webos-text-entry.error input, .webos-password-entry.error input, .webos-textarea-entry.error textarea {
+.webos-text-entry.error input, .webos-password-entry.error input, .webos-textarea-entry.error textarea,
+.has-error .form-control {
 	border-color: #b30000;
 }
 
@@ -24,12 +27,11 @@ input[type="number"]:focus, input[type="email"]:focus {
 	background: url('usr/share/images/themes/adwaita/search.png') no-repeat center right white;
 }
 
-input[type="button"], input[type="submit"], .webos-button { 
+input[type="button"], input[type="submit"], .webos-button, .btn { 
 	min-height: 25px;
 	font-size: 1.1em;
-	border: 1px solid #9d9d9d;
 	font-weight: normal;
-	color: #505156;
+	line-height: 20pt;
 	display: inline-block;
 	position: relative;
 	margin-left: .1em;
@@ -37,13 +39,10 @@ input[type="button"], input[type="submit"], .webos-button {
 	padding: 0 8px;
 	text-decoration: none !important;
 	text-align: center;
-	background-color: #fcfcfc;
-	background: -moz-linear-gradient(white, #e8e8e8);
-	background: -webkit-linear-gradient(white, #e8e8e8);
-	background: linear-gradient(white, #e8e8e8);
 	-moz-border-radius: 2px;
 	-webkit-border-radius: 2px;
 	border-radius: 2px;
+	border: 1px solid transparent;
 }
 .webos-button { /* On desactive la selection des boutons */
 	-moz-user-select: none;
@@ -52,19 +51,56 @@ input[type="button"], input[type="submit"], .webos-button {
 	-o-user-select: none;
 	user-select: none;
 }
-input[type="button"]:hover, input[type="submit"]:hover, .webos-button:hover {
-	background: -moz-linear-gradient(white, #dddddd);
-	background: -webkit-linear-gradient(white, #dddddd);
-	background: linear-gradient(white, #dddddd);
+
+input[type="button"], .webos-butto, .btn-default {
+	color: #505156;
+	border-color: #979797;
+	background-color: #ececec;
+	background: -moz-linear-gradient(#fbfbfb, #dedede);
+	background: -webkit-linear-gradient(#fbfbfb, #dedede);
+	background: linear-gradient(#fbfbfb, #dedede);
+	box-shadow: inset 0 0 1px 1px #e7e7e7;
 }
-input[type="button"]:active, input[type="submit"]:active, .webos-button:active,
-input[type="button"].active, input[type="submit"].active, .webos-button.active {
-	background: -moz-linear-gradient(#b6b6b6, #a0a0a0);
-	background: -webkit-linear-gradient(#b6b6b6, #a0a0a0);
-	background: linear-gradient(#b6b6b6, #a0a0a0);
-	border-color: #636363;
+input[type="button"]:hover, .webos-button:hover, .btn-default:hover {
+	background: -moz-linear-gradient(white, #e8e8e8);
+	background: -webkit-linear-gradient(white, #e8e8e8);
+	background: linear-gradient(white, #e8e8e8);
+}
+input[type="button"]:active, .webos-button:active, .btn-default:active,
+input[type="button"].active, .webos-button.active, .btn-default.active {
+	background: -moz-linear-gradient(#c4c4c4, #cbcbcb);
+	background: -webkit-linear-gradient(#c4c4c4, #cbcbcb);
+	background: linear-gradient(#c4c4c4, #cbcbcb);
+	background-color: #c4c4c4;
+	border-color: #858585;
 	color: #4f5054;
+	box-shadow: inset 0 0 1px 1px #acacac;
 }
+
+input[type="submit"], .webos-button.submit, .btn-primary { 
+	color: white;
+	border: 1px solid #2a8ece;
+	background-color: #46a5e9;
+	background: -moz-linear-gradient(#52bbec, #368ae6);
+	background: -webkit-linear-gradient(#52bbec, #368ae6);
+	background: linear-gradient(#52bbec, #368ae6);
+	box-shadow: inset 0 0 1px 1px #5bb5ec;
+}
+input[type="submit"]:hover, .webos-button.submit:hover, .btn-primary:hover {
+	background-color: #4aacea;
+	background: -moz-linear-gradient(#64c8ec, #3a91e7);
+	background: -webkit-linear-gradient(#64c8ec, #3a91e7);
+	background: linear-gradient(#64c8ec, #3a91e7);
+}
+input[type="submit"]:active, .webos-button.submit:active, .btn-primary:active,
+input[type="submit"].active, .webos-button.submit.active, .btn-primary.active {
+	background-color: #3d96e7;
+	background: -moz-linear-gradient(#378ce6, #44a1e9);
+	background: -webkit-linear-gradient(#378ce6, #44a1e9);
+	background: linear-gradient(#378ce6, #44a1e9);
+	box-shadow: none;
+}
+
 input[type="button"][disabled],
 input[type="button"][disabled]:hover,
 input[type="button"][disabled]:active,
@@ -73,7 +109,8 @@ input[type="submit"][disabled]:hover,
 input[type="submit"][disabled]:active,
 .webos-button.disabled,
 .webos-button.disabled:hover,
-.webos-button.disabled:active {
+.webos-button.disabled:active,
+.btn[disabled] {
 	border: 1px solid #b6b9b6;
 	color: #a8aca8;
 	background: #f4f4f2;
@@ -83,9 +120,31 @@ input[type="submit"][disabled]:active,
 }
 .webos-button x-icon {
 	display: inline-block;
-	margin-top: 4px;
+	line-height: 22px;
+}
+.webos-button x-icon img {
+	vertical-align: middle;
 }
 
+.webos-button-group {
+	display: inline-block;
+	white-space: nowrap;
+	overflow: hidden;
+}
+.webos-button-group > .webos-button:not(:first-child) {
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	margin-left: 0;
+}
+.webos-button-group > .webos-button:not(:last-child) {
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+	margin-right: -5px;
+}
+.webos-button-group > .webos-button:active,
+.webos-button-group > .webos-button.active {
+	z-index: 1;
+}
 
 .webos-entry-container input[type="submit"].fake-submit {
 	width: 0;
@@ -151,7 +210,9 @@ input[type="submit"][disabled]:active,
 	border: 1px solid #c4c1bd;
 	border-top: none;
 	padding: 3px;
-	background: url('usr/share/images/themes/adwaita/inputs/list-btn-bg.png') repeat-x white;
+	background: -moz-linear-gradient(#b1b1a7, #d8d8d5);
+	background: -webkit-linear-gradient(#b1b1a7, #d8d8d5);
+	background: linear-gradient(#b1b1a7, #d8d8d5);
 }
 
 .webos-container {
@@ -287,4 +348,52 @@ input[type="submit"][disabled]:active,
 }
 .webos-switchbutton[disabled] .entry.off .labels {
 	background-position: left 50%;
+}
+
+.webos-popover {
+	position: relative;
+}
+.webos-popover > .popover-toggle {
+	position: relative;
+}
+.webos-popover > .popover-content {
+	position: absolute;
+	padding: 5px;
+	margin-top: 2px;
+	z-index: 2;
+	display: none;
+
+	background-color: white;
+	border: 1px solid #969696;
+	border-radius: 5px;
+	box-shadow: 0 0 5px lightgray;
+}
+/* Popover arrow */
+.webos-popover > .popover-content:after, .webos-popover > .popover-content:before {
+	bottom: 100%;
+	border: solid transparent;
+	content: " ";
+	height: 0;
+	width: 0;
+	position: absolute;
+	pointer-events: none;
+}
+.webos-popover > .popover-content:after {
+	border-bottom-color: white;
+	border-width: 10px;
+	left: 30px;
+	margin-left: -10px;
+}
+.webos-popover > .popover-content:before {
+	border-bottom-color: #969696;
+	border-width: 11px;
+	left: 30px;
+	margin-left: -11px;
+}
+
+/* Color picker */
+.webos-color-picker .picker-palette li.color-picked {
+	background-image: url('usr/share/images/themes/elementary/inputs/color-picker.svg');
+	background-position: center center;
+	background-repeat: no-repeat;
 }

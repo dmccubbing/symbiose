@@ -32,7 +32,9 @@ class IconController extends \lib\RawBackController {
 		$httpResponse->addHeader('Last-Modified: ' . gmdate('D, d M Y H:i:s T', $fileMtime));
 
 		$out = $fileManager->read($filePath);
-		$this->responseContent->setValue($out);
+		$httpResponse->addHeader('Content-Length: '.strlen($out));
+
+		$this->responseContent->output($out);
 	}
 
 	protected function _getIconPath($index, $scalable = false) {	
@@ -45,18 +47,31 @@ class IconController extends \lib\RawBackController {
 				'type' => $indexData[0],
 				'theme' => $indexData[1],
 				'size' => $indexData[2],
-				'name' => $indexData[3]
+				'name' => $indexData[3],
+				'format' => 'png'
 			);
 		} else {
 			$iconData = array(
 				'type' => $indexData[0],
 				'size' => $indexData[1],
-				'name' => $indexData[2]
+				'name' => $indexData[2],
+				'format' => 'png'
 			);
 		}
+		$iconData['format'] = 'png';
 
 		if ($scalable) {
 			//First, if scalable icons are supported, try to find one
+			
+			//With specified size
+			$svgIconData = $iconData;
+			$svgIconData['format'] = 'svg';
+			$iconPath = $this->_buildFinalPath($svgIconData);
+			if ($fileManager->exists($iconPath)) {
+				return $iconPath;
+			}
+
+			//A scallable one
 			$scalableIconData = $iconData;
 			$scalableIconData['size'] = 'scalable';
 			$iconPath = $this->_buildFinalPath($scalableIconData);
@@ -65,7 +80,6 @@ class IconController extends \lib\RawBackController {
 				return $iconPath;
 			}
 		}
-		
 
 		//Try to find the icon with the specified size
 		$iconPath = $this->_buildFinalPath($iconData);
@@ -81,7 +95,6 @@ class IconController extends \lib\RawBackController {
 			return $iconPath;
 		}
 
-		//Try to find this icon with another size
 		$altIconData = $iconData;
 		$altIconData['size'] = 0;
 		$sizesAlternatives = $this->_listAlternatives($altIconData, 'size');
@@ -93,6 +106,25 @@ class IconController extends \lib\RawBackController {
 
 		//Finally, try to find this icon within a different theme
 		if (isset($iconData['theme'])) {
+			if ($scalable) {
+				$basePathData = $scalableIconData;
+				unset($basePathData['name']);
+				unset($basePathData['theme']);
+				unset($basePathData['size']);
+
+				$basePath = $this->_buildPath($basePathData);
+				$files = $fileManager->readDir($basePath);
+				foreach($files as $filename => $filepath) {
+					$scalableIconData['theme'] = $filename;
+
+					$iconPath = $this->_buildFinalPath($scalableIconData);
+
+					if ($fileManager->exists($iconPath)) {
+						return $iconPath;
+					}
+				}
+			}
+
 			$basePathData = $iconData;
 			unset($basePathData['name']);
 			unset($basePathData['size']);
@@ -181,9 +213,9 @@ class IconController extends \lib\RawBackController {
 	}
 
 	protected function _buildFinalPath(array $iconData) {
-		$format = 'png';
+		$format = $iconData['format'];
 
-		if ($iconData['size'] == 'scalable') {
+		if (isset($iconData['size']) && $iconData['size'] == 'scalable') {
 			$format = 'svg';
 		}
 

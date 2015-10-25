@@ -27,7 +27,7 @@
 		 * @type {String}
 		 * @private
 		 */
-		_url: 'sbin/apicall.php',
+		_url: 'api',
 		/**
 		 * This server call's request data.
 		 * @type {Object}
@@ -105,12 +105,12 @@
 				id: this.id(),
 				module: module,
 				action: options.method,
-				arguments: JSON.stringify(options.arguments, function(key, value) { //Convert all arguments to strings/numbers
+				arguments: encodeURIComponent(JSON.stringify(options.arguments, function(key, value) { //Convert all arguments to strings/numbers
 					if (typeof value === 'number' && !isFinite(value)) {
 						return String(value);
 					}
 					return value;
-				}),
+				})),
 				user: options.username,
 				password: options.password,
 				pid: options.pid,
@@ -174,12 +174,17 @@
 			}
 
 			usedTransport.doRequest(this, [function(json) {
+				var data;
 				try {
 					if (!json) {
 						throw new Webos.Error('Empty response');
 					}
 
-					var data = jQuery.parseJSON(json); //On essaie de recuperer les donnees JSON
+					if (typeof json == 'string') {
+						data = jQuery.parseJSON(json); //On essaie de recuperer les donnees JSON
+					} else {
+						data = json;
+					}
 				} catch (jsonError) { //Si une erreur survient
 					var error = 'Malformed JSON data ('+jsonError.name+'): '+jsonError.message+'. Data :'+"\n"+json;
 					error += "\n"+that.stack();
@@ -197,8 +202,8 @@
 					that.setCompleted(response);
 					return; //On stoppe l'execution de la fonction
 				}
-				
-				var response = new W.ServerCall.Response(data); //On cree la reponse
+
+				var response = Webos.ServerCall.Response.create(data); //On cree la reponse
 				
 				that.setCompleted(response);
 			}, function(res) {
@@ -232,15 +237,7 @@
 
 				//No more transport, trigger an error
 
-				var errMsg = 'An error occurred while loading a request (no working transport found)';
-				/*if (textStatus) {
-					error += ' (status : '+textStatus;
-					if (errorThrown) {
-						error += ', '+errorThrown;
-					}
-					error += ')';
-				}*/
-				errMsg += "\n"+that.stack();
+				var errMsg = 'An error occurred while loading a request (no working transport found)'+"\n"+that.stack();
 
 				var resp = Webos.ServerCall.Response.error(errMsg);
 				that.setCompleted(resp);
@@ -280,7 +277,7 @@
 		 * Load this server call.
 		 * @param  {Webos.Callback} callback The callback.
 		 */
-		load: function $_WServerCall_load(callback) {
+		load: function (callback) {
 			var that = this;
 
 			if (callback) {
@@ -289,13 +286,11 @@
 
 			this.setStarted();
 
-			for (var i = 0; i < Webos.ServerCall.list.length; i++) {
-				var call = Webos.ServerCall.list[i];
-				
-				if (call._status == 1 && call.id() != this.id()) {
+			var handleCall = function (call) {
+				if (call._status == 1 && call.id() != that.id()) {
 					var isEqual = true;
 					for (var attr in call._data) {
-						if (call._data[attr] != this._data[attr]) {
+						if (call._data[attr] != that._data[attr]) {
 							isEqual = false;
 							break;
 						}
@@ -305,8 +300,15 @@
 						call.on('complete', function() {
 							that.setCompleted(call.result());
 						});
-						return this;
+						return true;
 					}
+				}
+			};
+
+			for (var i = 0; i < Webos.ServerCall.list.length; i++) {
+				var call = Webos.ServerCall.list[i];
+				if (call && handleCall(call)) {
+					return this;
 				}
 			}
 
@@ -329,7 +331,7 @@
 		 * Get this server call's stack trace.
 		 * @returns {String} The stack.
 		 */
-		stack: function $_WServerCall_stack() {
+		stack: function () {
 			var stack = '    at '+this._url+' calling action "'+this._data.action+'" in module "'+this._data.module+'"';
 			if (this._data.arguments && this._data.arguments != '{}') {
 				stack += "\n"+'    with arguments '+JSON.stringify(this._data.arguments);
@@ -476,12 +478,460 @@
 		return supported;
 	};
 
+	Webos.ServerCall.standalone = {
+		priority: 3,
+		options: {},
+		requestsOptions: {
+			groupRequests: false
+		},
+		supports: function() {
+			return Webos.standalone || Webos.built;
+		},
+		canTransport: function(req) {
+			if (req._options && req._options.host) { //Request on another webos
+				return false;
+			}
+
+			if (Webos.built && !Webos.isInstanceOf(req, Webos.ServerCall.Group)) {
+				var moduleName = req._data.module,
+					actionName = req._data.action;
+
+				if (moduleName == 'theme' && actionName == 'loadCss') {
+					return true;
+				}
+
+				// Only works with files - not directories
+				//if (moduleName == 'file' && actionName == 'getContents') { //Better than calling the API (files are cached)
+				//	return true;
+				//}
+			}
+
+			return Webos.standalone;
+		},
+		doRequest: function(req, callback) {
+			var that = Webos.ServerCall.standalone;
+
+			var op = Webos.Operation.create();
+			op.addCallbacks(callback);
+
+			var url = Webos.ServerCall.ajax.options.url;
+			if (req._options.host) {
+				url = req._options.host+'/'+url;
+			}
+
+			var reqData = req._data;
+
+			if (!that._handlers[reqData.module] ||
+				!that._handlers[reqData.module][reqData.action]) {
+				op.setCompleted({
+					statusCode: 503,
+					out: 'Operation not supported in standalone mode'
+				});
+console.log('todo', reqData);
+				return op;
+			}
+
+			var args = req._options.arguments || {},
+				async = (req._options.async !== false);
+			var result = that._handlers[reqData.module][reqData.action](args, req);
+
+			if (!Webos.isInstanceOf(result, Webos.Operation)) {
+				if (!result) {
+					op.setCompleted({
+						statusCode: 501,
+						out: 'Operation not implemented yet in standalone mode'
+					});
+console.log('todo', reqData);
+				} else {
+					op.setCompleted(true, result);
+				}
+
+				return op;
+			} else {
+				var handlerOp = result;
+
+				if (handlerOp.completed() && !async) { //Workaround for synchronous calls
+					callback = W.Callback.toCallback(callback);
+
+					if (handlerOp.failed()) {
+						callback.error(handlerOp.result());
+					} else {
+						callback.success(handlerOp.result());
+					}
+				} else {
+					handlerOp.addCallbacks(callback);
+				}
+
+				return handlerOp;
+			}
+		},
+		_handlers: {
+			file: {
+				getContents: function (args, req) {
+					var op = Webos.Operation.create();
+
+					var filePath = args.file,
+						file = W.File.get(filePath),
+						errMsg = '';
+
+					if (!file) {
+						errMsg = 'Cannot read file "'+filePath+'": invalid file path';
+						op.setCompleted(true, {
+							statusCode: 400,
+							channels: {
+								2: errMsg
+							},
+							out: errMsg
+						});
+						return op;
+					}
+
+					if (file.get('is_dir')) {
+						errMsg = 'Cannot read file "'+file.get('path')+'": reading directories is not supported in standalone mode';
+						op.setCompleted(true, {
+							statusCode: 405,
+							channels: {
+								2: errMsg
+							},
+							out: errMsg
+						});
+						return op;
+					}
+
+					var fileUrl = file.get('realpath');
+
+					$.ajax({
+						url: fileUrl,
+						method: 'get',
+						dataType: 'text',
+						async: (req._options.async !== false),
+						success: function(data, textStatus, jqXHR) {
+							op.setCompleted(true, {
+								statusCode: 200,
+								channels: {
+									1: data
+								},
+								out: data
+							});
+						},
+						error: function(jqXHR, textStatus, errorThrown) {
+							var errMsg = 'Cannot read file "'+file.get('path')+'": '+errorThrown;
+
+							op.setCompleted(true, {
+								statusCode: jqXHR.status,
+								channels: {
+									2: errMsg
+								},
+								out: errMsg
+							});
+						}
+					});
+
+					return op;
+				}
+			},
+			userInterface: {
+				loadBooter: function (args) {
+					var op = Webos.Operation.create();
+
+					var loadUi = function (uiName) {
+						if (!uiName) {
+							op.setCompleted(Webos.ServerCall.Response.error('No user interface found'));
+							return;
+						}
+
+						var loadBooterOp = Webos.Operation.create();
+						var uiRootPath = '/boot/uis/'+uiName;
+
+						var createBooter = function(html, js, css) {
+							var booterData = {
+								name: uiName,
+								booter: {
+									html: html || '',
+									js: {
+										'main.min.js': js || ''
+									},
+									css: {
+										'style.min.css': css || ''
+									}
+								}
+							};
+
+							op.setCompleted({
+								statusCode: 200,
+								data: booterData
+							});
+						};
+
+						var ressources = {};
+						loadBooterOp.on('progress', function (data) {
+							if (data.value == 100) {
+								loadBooterOp.setCompleted();
+							}
+						});
+						loadBooterOp.on('complete', function (data) {
+							createBooter(ressources.html, ressources.js, ressources.css);
+						});
+
+						W.File.get(uiRootPath+'/index.html').readAsText([function (html) {
+							ressources.html = html;
+							loadBooterOp.addProgress(34);
+						}, function (resp) {
+							op.setCompleted(true, resp);
+						}]);
+
+						W.File.get(uiRootPath+'/main.min.js').readAsText([function (js) {
+							ressources.js = js;
+							loadBooterOp.addProgress(34);
+						}, function (resp) {
+							op.setCompleted(true, resp);
+						}]);
+
+						W.File.get(uiRootPath+'/style.min.css').readAsText([function (css) {
+							ressources.css = css;
+							loadBooterOp.addProgress(34);
+						}, function (resp) {
+							loadBooterOp.addProgress(34);
+						}]);
+
+						/*W.File.get(uiRootPath+'/index.html').readAsText([function (html) {
+							W.File.get(uiRootPath+'/main.min.js').readAsText([function (js) {
+								W.File.get(uiRootPath+'/style.min.css').readAsText([function (css) {
+									createBooter(html, js, css);
+								}, function (resp) {
+									createBooter(html, js);
+								}]);
+							}, function (resp) {
+								op.setCompleted(true, resp);
+							}]);
+						}, function (resp) {
+							op.setCompleted(true, resp);
+						}]);*/
+					};
+
+					if (args.ui) {
+						loadUi(args.ui);
+					} else {
+						W.File.get('/etc/uis.json').readAsText([function (json) {
+							var uis = $.parseJSON(json);
+
+							var uiName = '';
+							for (var i = 0; i < uis.length; i++) {
+								var uiConfig = uis[i];
+
+								if (uiConfig.isDefault) {
+									uiName = uiConfig.name;
+									break;
+								}
+							}
+
+							if (!uiName && uis[0]) {
+								uiName = uis[0].name;
+							}
+
+							loadUi(uiName);
+						}, function (resp) {
+							op.setCompleted(true, resp);
+						}]);
+					}
+
+					return op;
+				}
+			},
+			user: {
+				getLogged: function (args) {
+					// User not logged in
+					return {};
+				},
+				canRegister: function (args) {
+					return {
+						statusCode: 200,
+						data: {
+							register: false,
+							autoEnable: false
+						}
+					};
+				}
+			},
+			config: {
+				_getConfig: function (configPath) {
+					var op = Webos.Operation.create();
+
+					var configFile = W.File.get(configPath);
+
+					configFile.readAsText([function (contents) {
+						var configData = {};
+
+						if (configFile.get('extension') == 'json') {
+							configData = $.parseJSON(contents);
+						} else if (configFile.get('extension') == 'xml') {
+							var xml = $.parseXML(contents), $xml = $(xml);
+
+							$xml.find('config').children('attribute').each(function () {
+								var attrName = $(this).attr('name'),
+									attrValue = $(this).attr('value');
+
+								configData[attrName] = attrValue;
+							});
+						}
+
+						op.setCompleted({
+							statusCode: 200,
+							data: configData
+						});
+					}, function (resp) {
+						op.setCompleted(true, resp);
+					}]);
+
+					return op;
+				},
+				getConfig: function (args) {
+					return this._getConfig(args.path);
+				},
+				getUserConfig: function (args) {
+					return this._getConfig(args.base);
+				}
+			},
+			applicationShortcut: {
+				get: function (args) {
+					var op = Webos.Operation.create();
+
+					op.on('progress', function (eventData) {
+						if (eventData.value == 99 && !this.completed()) {
+							//Favorites
+							for (var appName in favorites) {
+								var appIndex = parseInt(favorites[appName], 10);
+
+								if (appIndex > 0 && data.applications[appName]) {
+									data.applications[appName].favorite = appIndex;
+								}
+							}
+
+							//Language support
+							var lang = Webos.Translation.language();
+							if (Webos.Locale.getDefault().name() !== lang) {
+								for (var type in data) {
+									var items = data[type];
+									for (var itemName in items) {
+										var item = items[itemName];
+
+										if (item[lang]) {
+											data[type][itemName] = $.extend({}, item, item[lang]);
+										}
+									}
+								}
+							}
+
+							this.setCompleted({
+								statusCode: 200,
+								data: data
+							});
+						}
+					});
+
+					var data = {}, favorites = {},
+						appsFile = W.File.get('/usr/share/applications.json'),
+						catsFile = W.File.get('/usr/share/categories.json');
+
+					appsFile.readAsText([function (json) {
+						data.applications = $.parseJSON(json);
+						op.addProgress(33);
+					}, function (resp) {
+						op.setCompleted(true, resp);
+					}]);
+					catsFile.readAsText([function (json) {
+						data.categories = $.parseJSON(json);
+						op.addProgress(33);
+					}, function (resp) {
+						op.setCompleted(true, resp);
+					}]);
+
+					Webos.ConfigFile.load('/etc/ske1/.config/favorites.xml', [function (configFile) {
+						favorites = configFile.data();
+						op.addProgress(33);
+					}, function (resp) {
+						//Ignore
+						op.addProgress(33);
+					}]);
+
+					return op;
+				}
+			},
+			theme: {
+				loadCss: function (args) {
+					var op = Webos.Operation.create();
+
+					var cssFile = W.File.get('/usr/share/css/themes/'+args.theme+'/'+args.ui+'/main.min.css');
+
+					cssFile.readAsText([function (css) {
+						op.setCompleted({
+							statusCode: 200,
+							data: {
+								css: {
+									'main.min.css': css
+								}
+							}
+						});
+					}, function (resp) {
+						op.setCompleted(true, resp);
+					}]);
+
+					return op;
+				}
+			},
+			cmd: {
+				_lastPid: -1,
+				execute: function (args) {
+					var that = this;
+					var op = Webos.Operation.create();
+
+					//TODO: support commands with spaces delimited by ""
+					var cmd = args.cmd.split(' ').shift();
+					var cmdFile = W.File.get('/usr/bin/'+cmd+'.js');
+
+					cmdFile.readAsText([function (js) {
+						op.setCompleted({
+							statusCode: 200,
+							data: {
+								pid: ++that._lastPid,
+								key: '',
+								authorizations: [],
+								path: cmdFile.get('path'),
+								script: js
+							}
+						});
+					}, function (resp) {
+						op.setCompleted(true, resp);
+					}]);
+
+					return op;
+				}
+			},
+			terminal: {
+				register: function (args) {
+					return this.getPromptData(args);
+				},
+				getPromptData: function (args) {
+					return {
+						statusCode: 200,
+						data: {
+							username: null,
+							host: null,
+							location: '/'
+						}
+					};
+				}
+			}
+		}
+	};
+	Webos.ServerCall.registerTransport('standalone', Webos.ServerCall.standalone);
+
 	Webos.ServerCall.ajax = {
 		priority: 1,
 		options: {
-			url: 'sbin/apicall.php',
+			url: 'api',
 			group: {
-				url: 'sbin/apicallgroup.php',
+				url: 'api/group',
 				type: 'post'
 			}
 		},
@@ -489,6 +939,10 @@
 			return jQuery.support.ajax;
 		},
 		canTransport: function(req) {
+			if (Webos.standalone && !req._options.host) {
+				return false;
+			}
+
 			return true;
 		},
 		doRequest: function(req, callback) {
@@ -535,7 +989,7 @@
 				data[i] = req._data;
 
 				if (typeof data[i].arguments == 'string') {
-					data[i].arguments = JSON.parse(data[i].arguments);
+					data[i].arguments = JSON.parse(decodeURIComponent(data[i].arguments));
 				}
 
 				if (async && req._options.async === false) {
@@ -583,10 +1037,34 @@
 			server: null
 		},
 		_socket: null,
-		_lastRespId: null,
-		_pendingOperations: {},
+		_serverEvents: new Webos.Observable(),
 		supports: function () {
-			return (typeof window.WebSocket != 'undefined');
+			//Standalone mode, static server
+			if (Webos.standalone) {
+				return false;
+			}
+
+			//Browser doesn't support websockets
+			if (!window.WebSocket) {
+				return false;
+			}
+
+			if (this.options.server) {
+				//if (this._connecting) {
+				//	return false;
+				//}
+				if (this._loadingDependencies) {
+					return false;
+				}
+
+				return this.options.server.started;
+			} else {
+				//Unknown status, try to connect
+				this.connect([function () {}, function () {}]);
+
+				//To not slow down loading times, disable websockets until we've got the status
+				return false;
+			}
 		},
 		canTransport: function(serverCall) {
 			return (serverCall._options.async !== false);
@@ -594,23 +1072,9 @@
 		socket: function() {
 			return Webos.ServerCall.websocket._socket;
 		},
-		_pendingOperation: function(id) {
-			return Webos.ServerCall.websocket._pendingOperations[id];
-		},
-		_lastPendingOperationId: function() {
-			for (var opId in Webos.ServerCall.websocket._pendingOperations) {}
-			return opId;
-		},
-		_pendingOperationsNbr: function() {
-			var i = 0;
-			for (var opId in Webos.ServerCall.websocket._pendingOperations) {
-				i++;
-			}
-			return i;
-		},
 		getServerStatus: function(callback) {
-			var operation = new Webos.Operation();
-			operation.addCallbacks(callback);
+			var op = new Webos.Operation();
+			op.addCallbacks(callback);
 
 			new Webos.ServerCall({
 				'class': 'WebSocketController',
@@ -620,14 +1084,63 @@
 				}
 			}).load([function(res) {
 				var serverStatus = res.getData();
+				serverStatus.hostname = document.location.hostname;
+
 				Webos.ServerCall.websocket.options.server = serverStatus;
 
-				operation.setCompleted(serverStatus);
+				op.setCompleted(serverStatus);
 			}, function(res) {
-				operation.setCompleted(res);
+				op.setCompleted(res);
 			}]);
 
-			return operation;
+			return op;
+		},
+		isServerStarted: function () {
+			var serverData = this.options.server;
+
+			if (!serverData) {
+				return false;
+			}
+			if (!serverData.enabled || !serverData.started) {
+				return false;
+			}
+
+			return true;
+		},
+		getServerLocation: function () {
+			var serverData = this.options.server;
+
+			if (!this.isServerStarted()) {
+				return null;
+			}
+
+			var address = {
+				protocol: serverData.protocol,
+				hostname: serverData.hostname || window.location.hostname,
+				port: serverData.port,
+				pathname: serverData.pathname || window.location.pathname
+			};
+
+			if (!address.port && typeof address.port != 'string') {
+				address.port = window.location.port;
+			}
+			if (!address.protocol) {
+				address.protocol = (window.location.protocol == 'https:' && address.port == window.location.port) ? 'wss:' : 'ws:';
+			}
+			if (address.protocol.substr(-1) != ':') {
+				address.protocol += ':';
+			}
+			if (address.pathname[address.pathname.length - 1] == '/') {
+				address.pathname = address.pathname.substr(0, address.pathname.length - 1);
+			}
+
+			address.url = address.protocol+'//'+address.hostname;
+			if (address.port) {
+				address.url += ':'+address.port;
+			}
+			address.url += address.pathname+'/api/ws';
+
+			return address;
 		},
 		startServer: function(callback) {
 			console.log('Starting server...');
@@ -675,15 +1188,16 @@
 			return call;
 		},
 		connect: function(callback) {
-			if (Webos.ServerCall.websocket._connecting) {
-				var operation = Webos.ServerCall.websocket._connectOperation;
+			var that = this, operation;
+
+			if (this._connecting) {
+				operation = this._connectOperation;
 				operation.addCallbacks(callback);
 
 				return operation;
 			}
 
-			var operation = new Webos.Operation();
-			operation.addCallbacks(callback);
+			operation = Webos.Operation.create().addCallbacks(callback);
 
 			var gotServerStatus = function(serverStatus) {
 				//Check server status
@@ -711,67 +1225,37 @@
 			};
 
 			var connectSocket = function(serverStatus) {
-				var websocketUrl = serverStatus.protocol+'://'+document.location.host+':'+serverStatus.port+'/api';
+				// Firstly, load required libraries
+				that._loadingDependencies = true;
+				Webos.require('/usr/lib/webos/wampy.min.js', [function () {
+					that._loadingDependencies = false;
 
-				console.log('Connecting WebSocket '+websocketUrl+'...');
+					var serverLocation = that.getServerLocation(),
+						websocketUrl = serverLocation.url;
 
-				var socket = new WebSocket(websocketUrl);
-				Webos.ServerCall.websocket._socket = socket;
+					console.log('Connecting WebSocket '+websocketUrl+'...');
 
-				var errorHandler = function(e) {
-					socket.removeEventListener('error', errorHandler);
-
-					operation.setCompleted(Webos.Error.build('Error while connecting to WebSocket server'));
-				};
-
-				socket.addEventListener('open', function (e) {
-					socket.removeEventListener('error', errorHandler);
-
-					if (this.readyState == 1) {
-						console.log('WebSocket connected !');
-						operation.setCompleted(socket);
-					} else {
-						operation.setCompleted(Webos.Error.build('Error while connecting to WebSocket server'));
-					}
-				});
-
-				socket.addEventListener('error', errorHandler);
-
-				socket.addEventListener('message', function(e) {
-					console.log('socket receive ('+e.data.length+')');
-
-					var msg = e.data, resp = null;
-
-					try {
-						resp = $.parseJSON(msg);
-
-						if (!resp) {
-							resp = {};
-							throw new Webos.Error('Empty response');
+					var socket = new Wampy(websocketUrl, {
+						maxRetries: 0,
+						realm: document.location.hostname,
+						onConnect: function () {
+							console.log('WebSocket connected !');
+							operation.setCompleted(socket);
+						},
+						onClose: function () {
+							console.log('WebSocket closed.');
+						},
+						onError: function () {
+							operation.setCompleted(Webos.Error.build('Error while connecting to WebSocket server'));
+						},
+						onReconnect: function () {
+							console.log('Reconnecting WebSocket...');
 						}
-					} catch(err) {
-						msg = err;
-					}
-
-					if (resp.id === null && Webos.ServerCall.websocket._lastRespId !== null) {
-						resp.id = Webos.ServerCall.websocket._lastRespId + 1;
-					}
-
-					if (Webos.ServerCall.websocket._lastRespId === null && Webos.ServerCall.websocket._pendingOperationsNbr() == 1) {
-						resp.id = Webos.ServerCall.websocket._lastPendingOperationId();
-					}
-
-					var operation = Webos.ServerCall.websocket._pendingOperation(resp.id);
-
-					if (operation) {
-						Webos.ServerCall.websocket._lastRespId = resp.id;
-						operation.setCompleted(msg);
-					}
-				});
-
-				socket.addEventListener('close', function(e) {
-					console.log('WebSocket closed.');
-				});
+					});
+					Webos.ServerCall.websocket._socket = socket;
+				}, function (resp) {
+					operation.setCompleted(resp);
+				}]);
 			};
 
 			if (Webos.ServerCall.websocket.options.server) {
@@ -779,15 +1263,15 @@
 				return operation;
 			}
 
-			Webos.ServerCall.websocket._connecting = true;
-			Webos.ServerCall.websocket._connectOperation = operation;
+			this._connecting = true;
+			this._connectOperation = operation;
 
 			operation.on('complete', function(data) {
-				Webos.ServerCall.websocket._connecting = false;
-				Webos.ServerCall.websocket._connectOperation = null;
+				that._connecting = false;
+				that._connectOperation = null;
 			});
 
-			Webos.ServerCall.websocket.getServerStatus([function(serverStatus) {
+			that.getServerStatus([function(serverStatus) {
 				gotServerStatus(serverStatus);
 			}, function(res) {
 				operation.setCompleted(res);
@@ -799,7 +1283,7 @@
 			var socket = Webos.ServerCall.websocket.socket();
 
 			if (socket) {
-				socket.close();
+				socket.disconnect();
 			}
 
 			Webos.ServerCall.websocket._socket = null;
@@ -809,46 +1293,44 @@
 			return Webos.ServerCall.websocket.connect(callback);
 		},
 		_sendMsg: function(msg, callback) {
-			var operation = new Webos.Operation();
-			operation.addCallbacks(callback);
+			var operation = new Webos.Operation().addCallbacks(callback);
 
 			var sendMsg = function(socket) {
-				var errorHandler = function(e) {
-					removeHandlers();
-					operation.setCompleted(Webos.Error.build('Error while sending message to WebSocket server: '+e.toString()));
-				};
-				var msgHandler = function(e) {
-					removeHandlers();
-				};
-				var removeHandlers = function() {
-					socket.removeEventListener('error', errorHandler);
-					socket.removeEventListener('message', msgHandler);
-				};
+				operation.trigger('send');
+				Webos.ServerCall.websocket._lastReqTime = (new Date()).getTime();
 
-				socket.addEventListener('error', errorHandler);
-				socket.addEventListener('message', msgHandler);
+				console.log('socket send');
 
-				var doSendMsg = function() {
-					console.log('socket send ('+msg.length+')');
+				// Below is for WAMP v2
+				/*socket.call('api.call', msg, {
+					onSuccess: function (resp) {
+						console.log('socket receive');
 
-					operation.trigger('send');
-					Webos.ServerCall.websocket._lastReqTime = (new Date()).getTime();
-
-					try {
-						socket.send(msg);
-					} catch (err) {
-						removeHandlers();
-						operation.setCompleted(Webos.Error.build('Error while sending message to WebSocket server: '+err.message));
-						return;
+						operation.setCompleted(resp);
+					},
+					onError: function (err) {
+						console.log('RPC call failed!', err);
+						operation.setCompleted(Webos.Error.build('RPC call failed!'));
 					}
-				};
+				});*/
 
-				doSendMsg();
+				// Below is for WAMP v1
+				socket.call('api.call', {
+					callRes: function (resp) {
+						console.log('socket receive');
+
+						operation.setCompleted(resp);
+					},
+					callErr: function (err) {
+						console.log('RPC call failed!', err);
+						operation.setCompleted(Webos.Error.build('RPC call failed: '+err));
+					}
+				}, msg);
 			};
 
 			var socket = Webos.ServerCall.websocket.socket();
 
-			if (!socket || socket.readyState != 1) {
+			if (!socket || Webos.ServerCall.websocket._connecting) {
 				Webos.ServerCall.websocket.connect([function(socket) {
 					sendMsg(socket);
 				}, function(res) {
@@ -862,37 +1344,29 @@
 			return operation;
 		},
 		doRequest: function(req, callback) {
-			var operation = new Webos.Operation();
-			operation.addCallbacks(callback);
-
-			var msg = '';
+			var operation = new Webos.Operation().addCallbacks(callback);
 
 			var msgId = Webos.ServerCall.requestMsgId();
-			Webos.ServerCall.websocket._pendingOperations[msgId] = operation;
 
-			try {
-				msg = JSON.stringify({
-					id: msgId,
-					type: req._type,
-					data: req._data,
-					http_headers: {
-						'Accept-Language': window.navigator.language || window.navigator.userLanguage
-					}
-				});
-			} catch (err) {
-				operation.setCompleted(err);
-				return operation;
-			}
+			var msg = {
+				id: msgId,
+				type: req._type,
+				data: req._data,
+				http_headers: {
+					'Accept-Language': window.navigator.language || window.navigator.userLanguage
+				}
+			};
 
-			Webos.ServerCall.websocket._sendMsg(msg, [function() {}, function(res) {
-				operation.setCompleted(res);
+			Webos.ServerCall.websocket._sendMsg(msg, [function(resp) {
+				operation.setCompleted(resp);
+			}, function(resp) {
+				operation.setCompleted(resp);
 			}]);
 
 			return operation;
 		},
 		doRequestGroup: function(requests, callback) {
-			var operation = new Webos.Operation();
-			operation.addCallbacks(callback);
+			var operation = new Webos.Operation().addCallbacks(callback);
 
 			var data = [];
 
@@ -905,36 +1379,58 @@
 				data[i] = req._data;
 
 				if (typeof data[i].arguments == 'string') {
-					data[i].arguments = JSON.parse(data[i].arguments);
+					data[i].arguments = JSON.parse(decodeURIComponent(data[i].arguments));
 				}
 			}
 
 			var msgId = Webos.ServerCall.requestMsgId();
-			Webos.ServerCall.websocket._pendingOperations[msgId] = operation;
 
-			try {
-				msg = JSON.stringify({
-					id: msgId,
-					groupped: true,
-					type: 'post',
-					data: data,
-					http_headers: {
-						'Accept-Language': window.navigator.language || window.navigator.userLanguage
-					}
-				});
-			} catch (err) {
-				operation.setCompleted(err);
-				return operation;
-			}
+			var msg = {
+				id: msgId,
+				groupped: true,
+				type: 'post',
+				data: data,
+				http_headers: {
+					'Accept-Language': window.navigator.language || window.navigator.userLanguage
+				}
+			};
 
-			Webos.ServerCall.websocket._sendMsg(msg, [function() {}, function(res) {
-				operation.setCompleted(res);
+			Webos.ServerCall.websocket._sendMsg(msg, [function(resp) {
+				operation.setCompleted(resp);
+			}, function(resp) {
+				operation.setCompleted(resp);
 			}]);
 
 			return operation;
+		},
+		subscribe: function (topicUri, callback) {
+			var subscribe = function (socket) {
+				socket.subscribe(topicUri, callback);
+			};
+
+			var socket = Webos.ServerCall.websocket.socket();
+
+			if (!socket || Webos.ServerCall.websocket._connecting) {
+				Webos.ServerCall.websocket.connect([function(socket) {
+					subscribe(socket);
+				}, function(resp) {}]);
+			} else {
+				subscribe(socket);
+			}
+		},
+		unsubscribe: function (topicUri, callback) {
+			var socket = Webos.ServerCall.websocket.socket();
+
+			if (!socket || Webos.ServerCall.websocket._connecting) {
+				return;
+			}
+
+			socket.unsubscribe(topicUri, callback);
 		}
 	};
 	Webos.ServerCall.registerTransport('websocket', Webos.ServerCall.websocket);
+
+	Webos.websocket = Webos.ServerCall.websocket;
 
 	/**
 	 * A list of all server calls.
@@ -959,7 +1455,7 @@
 	 * @static
 	 * @private
 	 */
-	Webos.ServerCall.addCallToList = function $_WServerCall_addCallToList(call) {
+	Webos.ServerCall.addCallToList = function (call) {
 		var id = Webos.ServerCall.list.push(call) - 1;
 		Webos.ServerCall.notify('callregister', { call: call });
 		return id;
@@ -971,7 +1467,7 @@
 	 * @static
 	 * @private
 	 */
-	Webos.ServerCall.callStart = function $_WServerCall_callStart(call) {
+	Webos.ServerCall.callStart = function (call) {
 		if (Webos.ServerCall.getNbrPendingCalls() == 1) {
 			Webos.ServerCall.notify('start', { list: Webos.ServerCall.list });
 		}
@@ -984,11 +1480,13 @@
 	 * @static
 	 * @private
 	 */
-	Webos.ServerCall.callComplete = function $_WServerCall_callComplete(call) {
-		if (Webos.ServerCall.getNbrPendingCalls() == 0) {
+	Webos.ServerCall.callComplete = function (call) {
+		if (Webos.ServerCall.getNbrPendingCalls() === 0) {
 			Webos.ServerCall.notify('complete', { list: Webos.ServerCall.list });
 		}
 		Webos.ServerCall.notify('callcomplete', { call: call });
+
+		Webos.ServerCall.list[call.id()] = null;
 	};
 
 	/**
@@ -997,7 +1495,7 @@
 	 * @static
 	 * @private
 	 */
-	Webos.ServerCall._addToLoadStack = function $_WServerCall__addToLoadStack(call) {
+	Webos.ServerCall._addToLoadStack = function (call) {
 		Webos.ServerCall._loadStack.push(call);
 
 		if (Webos.ServerCall._loadStack.length == 1) {
@@ -1022,7 +1520,7 @@
 	 * @static
 	 * @private
 	 */
-	Webos.ServerCall._removeFromLoadStack = function $_WServerCall__removeFromLoadStack(callToRemove) {
+	Webos.ServerCall._removeFromLoadStack = function (callToRemove) {
 		var stack = [];
 		for (var i = 0; i < Webos.ServerCall._loadStack.length; i++) {
 			var call = Webos.ServerCall._loadStack[i];
@@ -1039,11 +1537,12 @@
 	 * @returns {Webos.ServerCall[]} A list of server calls.
 	 * @static
 	 */
-	Webos.ServerCall.getList = function $_WServerCall_getList(status) {
+	Webos.ServerCall.getList = function (status) {
 		var list = [];
 		for (var i = 0; i < Webos.ServerCall.list.length; i++) {
-			if (typeof status == 'undefined' || Webos.ServerCall.list[i]._status == status) {
-				list.push(Webos.ServerCall.list[i]);
+			var call = Webos.ServerCall.list[i];
+			if (call && (typeof status == 'undefined' || call._status == status)) {
+				list.push(call);
 			}
 		}
 		return list;
@@ -1054,7 +1553,7 @@
 	 * @returns {Webos.ServerCall[]} A list of server calls.
 	 * @static
 	 */
-	Webos.ServerCall.getPendingCalls = function $_WServerCall_getPendingCalls() {
+	Webos.ServerCall.getPendingCalls = function () {
 		return Webos.ServerCall.getList(1);
 	};
 
@@ -1063,7 +1562,7 @@
 	 * @returns {Number} The number of completed calls.
 	 * @static
 	 */
-	Webos.ServerCall.getCompletedCalls = function $_WServerCall_getCompletedCalls() {
+	Webos.ServerCall.getCompletedCalls = function () {
 		return Webos.ServerCall.getList(2);
 	};
 
@@ -1072,7 +1571,7 @@
 	 * @returns {Number} The number of pending calls.
 	 * @static
 	 */
-	Webos.ServerCall.getNbrPendingCalls = function $_WServerCall_getNbrPendingCalls() {
+	Webos.ServerCall.getNbrPendingCalls = function () {
 		return Webos.ServerCall.getPendingCalls().length;
 	};
 
@@ -1082,7 +1581,7 @@
 	 * @returns {Webos.ServerCall.Group} The group.
 	 * @static
 	 */
-	Webos.ServerCall.join = function $_WServerCall_join() {
+	Webos.ServerCall.join = function () {
 		var requests = [];
 		for (var i = 0; i < arguments.length; i++) {
 			var arg = arguments[i];
@@ -1105,7 +1604,7 @@
 	 * @augments {Webos.Operation}
 	 * @since 1.0beta1
 	 */
-	Webos.ServerCall.Group = function WServerCallGroup() {
+	Webos.ServerCall.Group = function () {
 		Webos.Operation.call(this);
 
 		this._initialize.apply(this, arguments);
@@ -1125,7 +1624,7 @@
 		 * This server calls group's request URL.
 		 * @type {String}
 		 */
-		_url: 'sbin/apicallgroup.php',
+		_url: 'api/group',
 		/**
 		 * This server calls group's request type.
 		 * @type {String}
@@ -1177,18 +1676,18 @@
 			return id;
 		},
 		acceptedTransports: function () {
-			var transports = Webos.ServerCall.transportsForCall(this),
-				usedTransport = null;
+			var transports = {},
+				usedTransport = null,
+				i,
+				transName = '', transApi = null;
 
-			var transports = {};
-
-			for (var i = 0; i < this._requests.length; i++) {
+			for (i = 0; i < this._requests.length; i++) {
 				var req = this._requests[i];
 
 				var reqTransports = req.acceptedTransports();
 
-				for (var transName in reqTransports) {
-					var transApi = reqTransports[transName];
+				for (transName in reqTransports) {
+					transApi = reqTransports[transName];
 
 					if (!transApi.canTransportRequestGroups()) { //Supports request groups ?
 						continue;
@@ -1205,9 +1704,9 @@
 			var reqsNbr = this._requests.length,
 				usedTransportsList = [];
 
-			for (var transName in transports) {
-				var reqsIndexes = transports[transName],
-					transApi = Webos.ServerCall.transport(transName);
+			for (transName in transports) {
+				var reqsIndexes = transports[transName];
+				transApi = Webos.ServerCall.transport(transName);
 
 				if (reqsNbr == reqsIndexes.length) {
 					usedTransportsList.push(transApi);
@@ -1220,7 +1719,7 @@
 
 			var usedTransports = {};
 
-			for (var i = 0; i < usedTransportsList.length; i++) {
+			for (i = 0; i < usedTransportsList.length; i++) {
 				var trans = usedTransportsList[i];
 
 				usedTransports[trans.name()] = trans;
@@ -1273,12 +1772,17 @@
 				}
 
 				usedTransport.doRequestGroup(reqs, [function(json) {
+					var data;
 					try {
 						if (!json) {
 							throw new Webos.Error('Empty response');
 						}
 
-						var data = jQuery.parseJSON(json); //On essaie de recuperer les donnees JSON
+						if (typeof json == 'string') {
+							data = jQuery.parseJSON(json); //On essaie de recuperer les donnees JSON
+						} else {
+							data = json;
+						}
 					} catch (jsonError) { //Si une erreur survient
 						var errMsg = 'Malformed JSON data ('+jsonError.name+'): '+jsonError.message+'. Data :'+"\n"+json,
 							resp;
@@ -1295,7 +1799,7 @@
 					
 					var resp, i = 0;
 					for (var index in data.data) {
-						resp = new W.ServerCall.Response(data.data[index]); //On cree la reponse
+						resp = Webos.ServerCall.Response.create(data.data[index]); //On cree la reponse
 						reqs[i].setCompleted(resp);
 
 						i++;
@@ -1350,13 +1854,15 @@
 		 */
 		load: function(callback) {
 			if (callback) {
+				var i;
+
 				if (callback instanceof Array && callback.length == this._requests.length) {
-					for (var i = 0; i < this._requests.length; i++) {
+					for (i = 0; i < this._requests.length; i++) {
 						this._requests[i].addCallbacks(this._callbacks[i]);
 					}
 				} else {
 					callback = Webos.Callback.toCallback(callback);
-					for (var i = 0; i < this._requests.length; i++) {
+					for (i = 0; i < this._requests.length; i++) {
 						this._requests[i].addCallbacks(callback);
 					}
 				}
@@ -1398,7 +1904,7 @@
 	 * @constructor
 	 * @since  1.0alpha1
 	 */
-	Webos.ServerCall.Response = function WServerCallResponse(response) {
+	Webos.ServerCall.Response = function (response) {
 		if (!response || typeof response != 'object') {
 			response = {
 				success: false,
@@ -1468,7 +1974,7 @@
 		 * @return {Number} The status class.
 		 */
 		getStatusClass: function() {
-			return parseInt(String(this._data.statusCode).substr(0, 1));
+			return parseInt(String(this._data.statusCode).substr(0, 1), 10);
 		},
 		/**
 		 * Get the response's error, if there is one.
@@ -1503,5 +2009,13 @@
 			},
 			out: msg
 		});
+	};
+
+	Webos.ServerCall.Response.create = function (data) {
+		if (Webos.isInstanceOf(data, Webos.ServerCall.Response)) {
+			return data;
+		} else {
+			return new Webos.ServerCall.Response(data);
+		}
 	};
 })();

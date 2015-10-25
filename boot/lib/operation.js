@@ -9,6 +9,9 @@
 	var Operation = function () {
 		Webos.Observable.call(this);
 	};
+	/**
+	 * Operation's prototype.
+	 */
 	Operation.prototype = {
 		/**
 		 * True if this operation is started, false otherwise.
@@ -28,6 +31,7 @@
 		 * @private
 		 */
 		_completed: false,
+		_failed: false,
 		/**
 		 * This operation's result.
 		 * @private
@@ -37,9 +41,8 @@
 			var that = this;
 
 			if (typeof event == 'object') {
-				var events = event;
-				for (var eventName in events) {
-					var fn = events[eventName];
+				for (var eventName in event) {
+					fn = event[eventName];
 					if (typeof fn != 'function') {
 						continue;
 					}
@@ -94,25 +97,19 @@
 			return this._completed;
 		},
 		/**
+		 * Get this operation's result.
+		 * @return {Object} The result.
+		 * @since  1.0beta5
+		 */
+		result: function () {
+			return this._result;
+		},
+		/**
 		 * Check if this operation is failed.
 		 * @return {Boolean} True if this operations is failed, false otherwise.
 		 */
 		failed: function () {
-			var result = this._result;
-
-			if (result === false) {
-				return true;
-			}
-
-			if (Webos.isInstanceOf(result, Webos.Callback.Result)) {
-				return (!result.isSuccess());
-			}
-
-			if (Webos.isInstanceOf(result, Webos.Error)) {
-				return true;
-			}
-
-			return false;
+			return this._failed;
 		},
 		/**
 		 * Mark this operation as started.
@@ -149,20 +146,51 @@
 
 			this.trigger('progress', { value: value });
 		},
+		addProgress: function (value) {
+			value = Number(value);
+
+			if (isNaN(value)) {
+				return false;
+			}
+
+			return this.setProgress(this.progress() + value);
+		},
 		/**
 		 * Mark this operation as completed.
-		 * @param result This operation's result.
+		 * @param {} result This operation's result. False values will mark the operation as failed.
+		 * @param {} [data] This operation's result data, if not provided as first argument.
 		 */
-		setCompleted: function (result) {
+		setCompleted: function (result, data) {
 			this.setProgress(100);
 
-			this._completed = true;
-			this._result = result;
+			if (typeof data == 'undefined') {
+				data = result;
+			}
 
-			this.trigger('complete', { result: result, failed: this.failed() });
+			var isFailed = function () {
+				if (result === false) {
+					return true;
+				}
+
+				if (Webos.isInstanceOf(result, Webos.Callback.Result)) {
+					return (!result.isSuccess());
+				}
+
+				if (Webos.isInstanceOf(result, Webos.Error)) {
+					return true;
+				}
+
+				return false;
+			};
+
+			this._completed = true;
+			this._failed = isFailed();
+			this._result = data;
+
+			this.trigger('complete', { result: this.result(), failed: this.failed() });
 
 			var eventName = (this.failed()) ? 'error' : 'success';
-			this.trigger(eventName, { result: result });
+			this.trigger(eventName, { result: this.result() });
 		},
 		/**
 		 * Add callbacks to this operation.
@@ -178,24 +206,88 @@
 			this.on('error', function(eventData) {
 				callbacks.fire('error', [eventData.result]);
 			});
+
+			return this;
 		},
 		/**
 		 * Abort this operation.
 		 */
 		abort: function () {
 			this.trigger('abort');
+
+			return this;
 		},
 		/**
 		 * Pause this operation.
 		 */
 		pause: function () {
 			this.trigger('pause');
+
+			return this;
 		},
 		/**
 		 * Resume this operation.
 		 */
 		resume: function () {
 			this.trigger('resume');
+
+			return this;
+		},
+		/**
+		 * Execute a callback then this operation is completed (success or error).
+		 * @param  {Function} callback The callback.
+		 * @return {Object}            The operation.
+		 * @since  1.0beta5
+		 */
+		always: function (callback) {
+			this.on('complete', function (data) {
+				callback(data.result);
+			});
+			return this;
+		},
+		/**
+		 * Execute a callback then this operation succeeds.
+		 * @param  {Function} callback The callback.
+		 * @return {Object}            The operation.
+		 * @since  1.0beta5
+		 */
+		done: function (callback) {
+			this.on('success', function (data) {
+				callback(data.result);
+			});
+			return this;
+		},
+		/**
+		 * Execute a callback then this operation fails.
+		 * @param  {Function} callback The callback.
+		 * @return {Object}            The operation.
+		 * @since  1.0beta5
+		 */
+		fail: function (callback) {
+			this.on('error', function (data) {
+				callback(data.result);
+			});
+			return this;
+		},
+		/**
+		 * Execute a callback then this operation succeeds, fails and progresses.
+		 * @param  {Function} doneFilter     The callback to execute when the operation succeeds.
+		 * @param  {Function} failFilter     The callback to execute when the operation fails.
+		 * @param  {Function} progressFilter The callback to execute when the operation progresses.
+		 * @return {Object}              The operation.
+		 * @since  1.0beta5
+		 */
+		then: function (doneFilter, failFilter, progressFilter) {
+			if (doneFilter) {
+				this.done(doneFilter);
+			}
+			if (failFilter) {
+				this.fail(failFilter);
+			}
+			if (progressFilter) {
+				this.on('progress', progressFilter);
+			}
+			return this;
 		}
 	};
 	Webos.inherit(Operation, Webos.Observable);
@@ -207,6 +299,45 @@
 	 */
 	Operation.create = function () {
 		return new Operation();
+	};
+
+	/**
+	 * Create a multiple operation. The method `setCompleted()` must be called several times.
+	 * @param  {Number} length The number of sub-operations.
+	 * @return {Webos.Operation} The new operation.
+	 * @since 1.0beta5
+	 */
+	Operation.multiple = function (length) {
+		var op = new Operation();
+
+		var completedNbr = 0;
+
+		var setCompleted = op.setCompleted;
+		op.setCompleted = function (result, data) {
+			completedNbr++;
+
+			op.setProgress(completedNbr / length * 100);
+
+			if (completedNbr === length) {
+				return setCompleted.call(this, result, data);
+			}
+		};
+
+		return op;
+	};
+
+	/**
+	 * Create a new completed operation.
+	 * @return {Webos.Operation} The new operation.
+	 * @see Operation#setCompleted()
+	 * @since 1.0beta5
+	 */
+	Operation.createCompleted = function (result, data) {
+		var op = Operation.create();
+
+		op.setCompleted(result, data);
+
+		return op;
 	};
 
 

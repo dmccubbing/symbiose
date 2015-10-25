@@ -9,20 +9,17 @@ Webos.Script = function (js, args, url) {
 	this.js = js;
 	this.args = args;
 
-	if (typeof args == 'undefined') { //Si les arguments sont vides
-		args = new Webos.Arguments({});
-	}
-	
-	var options = args.getOptions(), params = args.getParams();
-
-	if (js != '' && js != null) {
+	if (js) {
 		js = 'try { '+js+' \n} catch(error) { W.Error.catchError(error); }';
 	}
-	
-	//On ajoute la sandbox
-	js = '(function(args) { '+js+"\n"+' })(new W.Arguments({ options: '+JSON.stringify(options)+', params: '+JSON.stringify(params)+' }));';
 
-	Webos.Script.run(js, url); //On execute le tout
+	//On execute le tout
+	Webos.Script.run(js, {
+		sourceUrl: url,
+		arguments: {
+			args: args || new Webos.Arguments()
+		}
+	});
 };
 
 /**
@@ -50,7 +47,7 @@ Webos.Script.run = function (js, options) {
 		arguments: null
 	}, options);
 
-	//Not good for debugging
+	// Disabled: not good for debugging
 	//js = js.replace(/\/\*([\s\S]*?)\*\//g, ''); //Remove comments
 
 	//Set source URL for debugging
@@ -161,24 +158,27 @@ Webos.ScriptFile._cache = {};
  */
 Webos.ScriptFile.load = function () {
 	var group = new Webos.ServerCall.Group([], { async: false });
-	for (var i = 0; i < arguments.length; i++) {
-		(function (path) {
-			group.add(new Webos.ServerCall({
-				'class': 'FileController',
-				'method': 'getContents',
-				'arguments': {
-					file: path
-				},
-				async: false
-			}), function(response) {
-				var js = response.getStandardChannel();
 
-				if (js) {
-					js = 'try {'+js+"\n"+'} catch(error) { W.Error.catchError(error); }';
-					Webos.Script.run(js, path);
-				}
-			});
-		})(arguments[i]);
+	var handlePath = function (path) {
+		group.add(new Webos.ServerCall({
+			'class': 'FileController',
+			'method': 'getContents',
+			'arguments': {
+				file: path
+			},
+			async: false
+		}), function(response) {
+			var js = response.getStandardChannel();
+
+			if (js) {
+				js = 'try {'+js+"\n"+'} catch(error) { W.Error.catchError(error); }';
+				Webos.Script.run(js, path);
+			}
+		});
+	};
+
+	for (var i = 0; i < arguments.length; i++) {
+		handlePath(arguments[i]);
 	}
 	
 	group.load();
@@ -187,43 +187,14 @@ Webos.ScriptFile.load = function () {
 };
 
 /**
- * Include a script.
- * @param  {String} path    The file's path.
- * @param  {Array} [args]    Arguments to provide to the script.
- * @param  {Object} [thisObj] The scope in which the script will be executed.
- * @deprecated Use Webos.ScriptFile.load() or Webos.require() instead.
- */
-function include(path, args, thisObj) {
-	thisObj = thisObj || window;
-	this.ajax = $.ajax({
-		url: path,
-		method: 'get',
-		async: false,
-		dataType: 'text',
-		success: function(data, textStatus, jqXHR) {
-			if (typeof args == 'undefined') { //Si les arguments sont vides
-				args = new W.Arguments({});
-			}
-			
-			var fn = new Function('args', data);
-			fn.call(thisObj, args);
-		}
-	});
-}
-
-/**
  * Include Javascript files and CSS stylesheets.
  * @param  {Array|String}   files      File(s).
  * @param  {Webos.Callback} callback   The callback.
- * @param  {Object}         [options]  Options.
+ * @param  {Object}         [options]  Global options.
  * @static
  */
 Webos.require = function (files, callback, options) {
 	callback = Webos.Callback.toCallback(callback);
-	options = $.extend({
-		styleContainer: null,
-		exportApis: []
-	}, options);
 
 	if (!files) { //No file to load
 		callback.success();
@@ -232,7 +203,7 @@ Webos.require = function (files, callback, options) {
 
 	var list = [];
 	if (files instanceof Array) {
-		if (files.length == 0) {
+		if (!files.length) {
 			callback.success();
 			return;
 		}
@@ -244,9 +215,24 @@ Webos.require = function (files, callback, options) {
 	var loadOperation = new Webos.Operation();
 
 	var loadedFiles = 0;
-	var onLoadFn = function(file) {
+	var onLoadFn = function(fileData, file, arg) {
+		if (typeof fileData.afterProcess == 'function') {
+			fileData.afterProcess(arg);
+		}
+
+		if (file && !Webos.require._cache[fileData.path]) { //Not cached
+			Webos.require._cache[fileData.path] = file;
+		}
+
 		loadedFiles++;
-		delete Webos.require._stacks[file.get('path')];
+
+		if (file) {
+			console.log('  Loaded: '+file.get('path'));
+		}
+
+		if (file && Webos.require._stacks[file.get('path')]) {
+			delete Webos.require._stacks[file.get('path')];
+		}
 
 		if (loadedFiles == list.length) {
 			callback.success();
@@ -254,68 +240,183 @@ Webos.require = function (files, callback, options) {
 		}
 	};
 
-	for (var i = 0; i < list.length; i++) {
-		(function(requiredFile) {
-			if (typeof requiredFile != 'object') {
-				requiredFile = { path: requiredFile };
+	var handleFile = function (i, requiredFile) {
+		if (typeof requiredFile != 'object') {
+			requiredFile = { path: requiredFile };
+		}
+
+		/*!
+		 * Options:
+		 *  * `path`: the file path
+		 *  * `contents`: alternatively, you can specify the file's contents
+		 *  * `process`: if false, the file will just be loaded, not processed. If a function, will be called to process the file with the file's contents as first parameter.
+		 *  * `afterProcess`: a callback executed after the code execution. If it's a CSS file, the inserted tag is passed as argument.
+		 *  * `type`: the file's MIME type, required if path is not provided
+		 *
+		 * CSS options:
+		 *  * `styleContainer`: the CSS style container, on which teh rules will be applied
+		 * 
+		 * Javascript options:
+		 *  * `context`: the context in which the script will be executed
+		 *  * `arguments`: some arguments to provide to the script
+		 *  * `exportApis`: APIs names to export to global scope
+		 *  * `optionnal`: do not wait for the file to be fully loaded before continuing
+		 *  * `forceExec`: force the script execution, even if it has been already executed
+		 * 
+		 * @type {Object}
+		 */
+		requiredFile = $.extend({
+			path: '',
+			contents: null,
+			context: null,
+			arguments: [],
+			styleContainer: null,
+			exportApis: [],
+			process: true,
+			afterProcess: null,
+			optionnal: false,
+			forceExec: false,
+			type: 'text/javascript'
+		}, options, requiredFile);
+
+		if (!requiredFile.context && Webos.Process && Webos.Process.current()) {
+			requiredFile.context = Webos.Process.current();
+		}
+
+		if (typeof requiredFile.path == 'string') {
+			requiredFile.path = requiredFile.path.replace(/^\.\//, '/'); //Compatibility with old scripts
+			requiredFile.path = Webos.File.beautifyPath(requiredFile.path);
+		}
+
+		var file;
+		if (typeof requiredFile.contents == 'string') {
+			file = Webos.VirtualFile.create(requiredFile.contents, {
+				mime_type: requiredFile.type,
+				path: requiredFile.path
+			});
+		} else if (requiredFile.path) {
+			var path = requiredFile.path;
+
+			//Check if the file is in the cache
+			if (Webos.require._cache[path]) {
+				file = Webos.require._cache[path];
+				console.log('  Loading from cache: '+path);
+			} else {
+				file = W.File.get(path, { is_dir: false });
+				console.log('Loading from network: '+path);
 			}
-			requiredFile = $.extend({
-				path: '',
-				context: null,
-				arguments: []
-			}, requiredFile);
+		} else {
+			onLoadFn(requiredFile);
+			return;
+		}
 
-			var file = W.File.get(requiredFile.path);
-			var call = file.readAsText([function(contents) {
-				if (file.get('extension') == 'js') {
-					var previousFile = Webos.require._currentFile;
-					Webos.require._stacks[file.get('path')] = [];
-					Webos.require._currentFile = file.get('path');
+		var checkCache = function () {
+			if (requiredFile.path && typeof requiredFile.process != 'function') {
+				if (Webos.require._cache[requiredFile.path]) { //Cached
+					if (!requiredFile.forceExec && file.matchesMimeType('text/javascript')) {
+						console.info('Not re-executing script: '+requiredFile.path);
+						onLoadFn(requiredFile, file);
+						return true;
+					} else if (requiredFile.forceExec) {
+						console.warn('Re-executing script: '+requiredFile.path);
+					}
+				}
+			}
+		};
 
-					if (typeof options.exportApis != 'undefined') {
-						var exportApiCode = '';
-						for (var i = 0; i < options.exportApis.length; i++) {
-							var apiName = options.exportApis[i];
-							exportApiCode += 'if (typeof '+apiName+' != "undefined") { window.'+apiName+' = '+apiName+'; }\n';
-						}
+		if (checkCache()) {
+			return;
+		}
 
-						contents += '\n'+exportApiCode;
+		var processFile = function (contents) {
+			if (requiredFile.process === false) {
+				onLoadFn(requiredFile, file);
+				return;
+			}
+			if (typeof requiredFile.process == 'function') {
+				var result = requiredFile.process(contents, requiredFile);
+				if (result === true) {
+					requiredFile.process = true;
+					processFile(contents);
+				}
+				onLoadFn(requiredFile, file);
+				return;
+			}
+
+			if (checkCache()) {
+				return;
+			}
+
+			if (file.get('extension') == 'js' || file.matchesMimeType('text/javascript')) {
+				var previousFile = Webos.require._currentFile;
+				Webos.require._stacks[file.get('path')] = [];
+				Webos.require._currentFile = file.get('path');
+
+				if (typeof requiredFile.exportApis != 'undefined') {
+					if (!(requiredFile.exportApis instanceof Array)) {
+						requiredFile.exportApis = [requiredFile.exportApis];
 					}
 
-					contents = 'try { '+contents+' \n} catch(error) { W.Error.catchError(error); }';
-					Webos.Script.run(contents, {
-						scourceUrl: file.get('path'),
-						context: requiredFile.context,
-						arguments: requiredFile.arguments
-					});
+					var exportApiCode = '';
+					for (var i = 0; i < requiredFile.exportApis.length; i++) {
+						var apiName = requiredFile.exportApis[i];
+						exportApiCode += 'if (typeof '+apiName+' != "undefined") { window.'+apiName+' = '+apiName+'; }\n';
+					}
 
-					Webos.require._currentFile = previousFile;
+					contents += '\n'+exportApiCode;
+				}
 
+				contents = 'try { '+contents+' \n} catch(error) { W.Error.catchError(error); }';
+				Webos.Script.run(contents, {
+					scourceUrl: file.get('path'),
+					context: requiredFile.context,
+					arguments: requiredFile.arguments
+				});
+
+				Webos.require._currentFile = previousFile;
+
+				if (requiredFile.optionnal) {
+					onLoadFn(requiredFile, file);
+				} else {
 					var stack = Webos.require._stacks[file.get('path')];
 					var group = Webos.Operation.group(stack);
 					if (group.observables().length > 0 && !group.completed()) {
 						group.one('success', function() {
-							onLoadFn(file);
+							onLoadFn(requiredFile, file);
 						});
 						group.oneEach('error', function() {
 							callback.error();
 						});
 					} else {
-						onLoadFn(file);
+						onLoadFn(requiredFile, file);
 					}
-				} else if (file.get('extension') == 'css') {
-					Webos.Stylesheet.insertCss(contents, options.styleContainer);
-					onLoadFn(file);
-				} else {
-					callback.error(Webos.Callback.Result.error('Unknown file type: "'+file.get('extension')+'" (file path: "'+file.get('path')+'")'));
 				}
+			} else if (file.get('extension') == 'css' || file.matchesMimeType('text/css')) {
+				var stylesheet = Webos.Stylesheet.insertCss(contents, requiredFile.styleContainer);
+				onLoadFn(requiredFile, file, stylesheet);
+			} else {
+				callback.error(Webos.Callback.Result.error('Unknown file type: "'+file.get('extension')+'" (file path: "'+file.get('path')+'")'));
+			}
+		};
+
+		if (requiredFile.contents) {
+			processFile(requiredFile.contents);
+		} else if (requiredFile.path) {
+			file.readAsText([function(contents) {
+				processFile(contents);
 			}, callback.error]);
-		})(list[i]);
+		}
+	};
+
+	for (var i = 0; i < list.length; i++) {
+		handleFile(i, list[i]);
 	}
 
 	if (Webos.require._currentFile) {
 		Webos.require._stacks[Webos.require._currentFile].push(loadOperation);
 	}
+
+	return loadOperation;
 };
 
 /**
@@ -337,78 +438,10 @@ Webos.require._currentFile = null;
 Webos.require._currentOperation = null;
 
 /**
- * Evaluate Javascript scripts.
- * @param  {Array|String}   scripts    Script(s).
- * @param  {Webos.Callback} callback   The callback.
- * @param  {Object}         [options]  Options.
- * @static
+ * Cache for files with explicit contents
+ * @type {Object}
  */
-Webos.eval = function (scripts, callback, options) {
-	callback = Webos.Callback.toCallback(callback);
-	options = $.extend({
-		styleContainer: null
-	}, options);
-
-	if (!scripts) { //No file to load
-		callback.success();
-		return;
-	}
-
-	var list = [];
-	if (scripts instanceof Array) {
-		if (files.length == 0) {
-			callback.success();
-			return;
-		}
-		list = scripts;
-	} else {
-		list = [String(scripts)];
-	}
-
-	var loadedFiles = 0;
-	var onLoadFn = function() {
-		loadedFiles++;
-		if (loadedFiles == list.length) {
-			callback.success();
-		}
-	};
-
-	for (var i = 0; i < list.length; i++) {
-		(function(contents) {
-			var id = new Date().getTime();
-
-			var previousFile = Webos.require._currentFile;
-			Webos.require._stacks[id] = [];
-			Webos.require._currentFile = id;
-
-			var fn = new Function(contents);
-			try {
-				fn();
-			} catch(error) {
-				W.Error.catchError(error);
-			}
-
-			Webos.require._currentFile = previousFile;
-
-			var stack = Webos.require._stacks[id];
-			var group = Webos.Observable.group(stack);
-			if (group.observables().length > 0) {
-				group.one('success', function() {
-					onLoadFn();
-				});
-				group.oneEach('error', function() {
-					callback.error();
-				});
-			} else {
-				onLoadFn();
-			}
-
-			if (Webos.require._currentFile) {
-				Webos.require._stacks[Webos.require._currentFile].push(call);
-			}
-		})(list[i]);
-	}
-};
+Webos.require._cache = {};
 
 /**
  * Arguments to be provided to a script.
@@ -417,142 +450,121 @@ Webos.eval = function (scripts, callback, options) {
  * @deprecated  The use of this class is deprecated.
  * @todo Simplify argument's management.
  */
-Webos.Arguments = function WArguments(args) {
-	this.args = $.extend({}, args);
-	if (typeof this.args.options == 'undefined') { this.args.options = {}; }
-	if (typeof this.args.params == 'undefined') { this.args.params = []; }
-	
-	this.isOption = function(name) { //Une option est-elle definie ?
-		return (typeof this.args.options[name] != 'undefined');
-	};
-	this.getOption = function(name) { //Recuperer le contenu de l'option
-		return this.args.options[name];
-	};
-	this.getOptions = function() { //Recuperer ttes les options
-		return this.args.options;
-	};
-	this.countNbrParams = function() { //Compter le nbr de parametres
-		return this.args.params.length;
-	};
-	this.isParam = function(no) { //Un parametre existe-t-il ?
-		return (typeof this.args.params[no] != 'undefined');
-	};
-	this.getParam = function(no) { //Recuperer un parametre
-		return this.args.params[no];
-	};
-	this.getParams = function() { //Recuperer ts les parametres
-		return this.args.params;
-	};
+Webos.Arguments = function (args) {
+	this._args = args || [];
+
+	this._schema = {};
+};
+Webos.Arguments.prototype = {
+	all: function () {
+		return this._args;
+	},
+	getOptions: function () {
+		var args = this._args, opts = {};
+
+		for (var i = 0; i < args.length; i++) {
+			var arg = args[i];
+
+			if (typeof arg === 'string' && arg[0] === '-') { // Option
+				if (arg[1] === '-') { // --abc=def
+					var items = arg.substr(2).split('=');
+					opts[items[0]] = items[1] || '';
+				} else { // -larth
+					arg = arg.substr(1);
+
+					for (var j = 0; j < arg.length; j++) {
+						opts[arg[j]] = '';
+					}
+
+					var nextArg = args[i + 1];
+					if (arg.length === 1 && (typeof nextArg !== 'string' || nextArg[0] !== '-')) { // -p password
+						opts[arg] = nextArg;
+						i++;
+					}
+				}
+			}
+		}
+
+		return opts;
+	},
+	getOption: function (opt) {
+		var opts = this.getOptions();
+
+		return opts[opt];
+	},
+	isOption: function (opt) {
+		return (typeof this.getOption(opt) !== 'undefined');
+	},
+	getParams: function () {
+		var args = this._args, params = [];
+
+		for (var i = 0; i < args.length; i++) {
+			if (typeof args[i] !== 'string') {
+				if (args[i][0] !== '-') {
+					params.push(args[i]);
+				} else {
+					if (args[i][1] !== '-' && args[i].length === 2) { // -p password
+						i++;
+					}
+				}
+			} else {
+				params.push(args[i]);
+			}
+		}
+
+		return params;
+	},
+	countNbrParams: function () {
+		return this.getParams().length;
+	},
+	getParam: function (paramIndex) {
+		var params = this.getParams();
+
+		return params[paramIndex];
+	},
+	isParam: function (paramIndex) {
+		return (typeof this.getParam(paramIndex) !== 'undefined');
+	}
 };
 
 /**
  * Parse a command.
- * @param   {String} cmd The command.
+ * @param   {String} fullCmd  The command.
  * @returns {Webos.Arguments} The parsed arguments.
  * @static
  * @deprecated  The use of Webos.Arguments is deprecated.
  */
-Webos.Arguments.parse = function(cmd) {
-	var cmdArray = cmd.split(' ');
-	cmdArray.shift(); //On enleve le premier element : c'est la commande
-	var argsStr = cmdArray.join(' ');
-	
-	var args = {
-		options: {},
-		params: []
-	};
-	var cacheBase = {
-		strStarted: false,
-		strType: '',
-		strIndex: '',
-		strContent: '',
-		previous: '',
-		strOptionType: '',
-		strStage: 'index'
-	};
-	var cache = $.extend({}, cacheBase);
-	
-	for (var i = 0; i < argsStr.length; i++) { //Pour chaque caractere char
-		var char = argsStr[i];
-		
-		if (char == '"') { //Delimiteur de chaine
-			if (cache.previous == '\\') { //Si on a echappe le delimiteur
-				if (cache.strStage == 'content') { //Si on remplit le contenu
-					cache.strContent = cache.strContent.substr(0, -1); //On enleve le \
-					cache.strContent += char; //On ajoute le "
-				} else { //Sinon on remplit l'index
-					cache.strIndex = cache.strIndex.substr(0, -1); //on enleve le \
-					cache.strIndex += char; //On ajoute le "
-				}
-			} else {
-				if (cache.strStarted == false) { //Si c'est le premier
-					cache.strStarted = true; //On le sauvegarde
-				} else { //Sinon, fin de chaine
-					cache.strStarted = false;
-				}
-			}
-		} else if (char == ' ' && cache.strStarted != true) { //Si c'est un espace et qu'on n'est pas dans une chaine
-			if (cache.strType == 'options') { //Si c'est une option
-				if (cache.strOptionType == 'short') { //Option courte
-					cache.strStage = 'content';
-				} else {
-					args.options[cache.strIndex] = cache.strContent; //On sauvegarde
-					cache = $.extend({}, cacheBase); //On remet le cache a zero
-				}
-			} else { //Sinon, c'est un argument
-				args.params.push(cache.strIndex); //On sauvegarde
-				cache = $.extend({}, cacheBase); //On remet le cache a zero
-			}
-		} else if (char == '-') { //Si c'est un tiret
-			if (cache.previous == '-') { //Si le caractere precedant etait aussi un tiret, c'est une option type --fruit=abricot
-				cache.strOptionType = 'long'; //Type de l'option
-			} else if (cache.previous == ' ' || cache.previous == '') { //Si c'etait un espace blanc, c'est une option type -aBv
-				cache.strType = 'options'; //C'est une option
-				cache.strOptionType = 'short'; //Type de l'option
-				cache.strStage = 'index'; //On remplit l'index
-			} else { //Sinon, ce n'est pas une option (e.g. fruit-de-mer)
-				if (cache.strStage == 'content') { //Si on remplit le contenu
-					cache.strContent += char; //On ajoute le -
-				} else { //Sinon, on remplit l'index
-					cache.strIndex += char; //On ajoute le -
-				}
-			}
-		} else if (char == '=') { //Si c'est un =
-			if (cache.strType == 'options' && cache.strOptionType == 'long') { //Si c'est une option type --fruit=abricot
-				cache.strStage = 'content'; //On remplit maintenant le contenu
-			}
-		} else { //Autre caractere
-			if (cache.strStage == 'content') { //Si on remplit le contenu
-				cache.strContent += char; //On ajoute le caractere
-			} else { //Sinon on remplit l'index
-				if (cache.strType == 'options') { //Si c'est une option
-					if (cache.strOptionType == 'long') { //Si c'est une option type --fruit=abricot
-						cache.strIndex += char; //On remplit l'index
-					} else { //Sinon, c'est une option type -aBv
-						args.options[char] = ''; //On ajoute l'option
-						//On definit les parametres au cas ou il y a une autre option apres
-						cache = $.extend({}, cacheBase); //On reinitialise le cache
-						cache.strType = 'options'; //C'est une option
-						cache.strOptionType = 'short'; //C'est une option type -aBv
-						cache.strStage = 'index'; //On remplit l'index
-						cache.strIndex = char;
-					}
-				} else { //Sinon c'est un argument
-					cache.strIndex += char; //On ajoute le caractere
-				}
-			}
-		}
-		cache.previous = char; //On definit le caractere precedant
+Webos.Arguments.parse = function(fullCmd) {
+	if (Webos.isInstanceOf(fullCmd, Webos.Arguments)) {
+		return fullCmd;
+	}
+	if (fullCmd instanceof Array) {
+		return new Webos.Arguments(fullCmd);
 	}
 
-	//On vide le cache du dernier caractere
-	if (cache.strIndex) {
-		if (cache.strType == 'options') {
-			args.options[cache.strIndex] = cache.strContent;
-		} else {
-			args.params.push(cache.strIndex);
-		}
+	var parsedCmd = Webos.Terminal.parseCmd(fullCmd)[0];
+	return new Webos.Arguments(parsedCmd.args);
+};
+
+Webos.Arguments._parseFullCmd = function (fullCmd) {
+	var parsed = {
+		cmd: '',
+		args: ''
+	};
+
+	var firstSep = fullCmd.indexOf(' ');
+	if (~firstSep) {
+		parsed.cmd = fullCmd.substr(0, firstSep);
+		parsed.args = fullCmd.substr(firstSep + 1);
+	} else {
+		parsed.cmd = fullCmd;
 	}
 
-	return new Webos.Arguments(args);
+	return parsed;
+};
+
+Webos.Arguments.getCommand = function (fullCmd) {
+	var parsedCmd = Webos.Arguments._parseFullCmd(fullCmd);
+
+	return parsedCmd.cmd;
 };

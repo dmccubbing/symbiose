@@ -24,7 +24,7 @@
 		this._state = 0; // 0 -> ready; 1 -> running; 2 -> idle; 3 -> killed.
 
 		//this.main = new Function('args', options.fn);
-		this.main = function () {
+		this.main = function (args) {
 			var js = options.fn;
 
 			var url = '';
@@ -34,7 +34,7 @@
 
 			js = '(function (args) { '+js+'\n }).call(Webos.Process.get('+that.getPid()+'), args);';
 
-			Webos.Script.create(js, this.args, url);
+			Webos.Script.create(js, args, url);
 		};
 
 		if (typeof this.pid != 'undefined') {
@@ -167,7 +167,6 @@
 			});
 
 			delete Webos.Process.list[this.getPid()];
-			delete this;
 		},
 		/**
 		 * Get this process' state.

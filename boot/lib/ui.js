@@ -166,8 +166,10 @@ Webos.UserInterface._list = [];
  * @returns {Webos.UserInterface} The user interface.
  */
 Webos.UserInterface.get = function(name, data) {
+	var ui;
+
 	for (var i = 0; i < Webos.UserInterface._list.length; i++) {
-		var ui = Webos.UserInterface._list[i];
+		ui = Webos.UserInterface._list[i];
 
 		if (ui.get('name') == name) {
 			if (data) {
@@ -177,7 +179,7 @@ Webos.UserInterface.get = function(name, data) {
 		}
 	}
 
-	var ui = new Webos.UserInterface((data || {}), name);
+	ui = new Webos.UserInterface((data || {}), name);
 	Webos.UserInterface._list.push(ui);
 
 	return ui;
@@ -203,7 +205,7 @@ Webos.UserInterface.current = function() {
  * @param  {Webos.Callback} callback The callback.
  */
 Webos.UserInterface.load = function(name, callback) {
-	var operation = new Webos.Operation();
+	var operation = Webos.Operation.create();
 	operation.addCallbacks(callback);
 
 	var lastLoadingMsg = '';
@@ -228,7 +230,7 @@ Webos.UserInterface.load = function(name, callback) {
 		if (error instanceof Webos.Error) {
 			msg += error.toString();
 		} else {
-			msg += error.name + ' : ' + error.message + '<br />Stack trace :<br />' + error.stack.replace(/\n/g, '<br />') + '';
+			msg += error.name + ': ' + error.message + '<br />Stack trace:<br />' + (error.stack || '').replace(/\n/g, '<br />') + '';
 		}
 
 		Webos.UserInterface.writeConsole(msg);
@@ -326,7 +328,7 @@ Webos.UserInterface.getList = function(callback) {
 
 			list.push(Webos.UserInterface.get(uiData.name, {
 				'labels': uiLabels,
-				'default': uiData['isDefault'],
+				'default': uiData.isDefault,
 				'displayname': uiData.attributes.displayname,
 				'enabled': true
 			}));
@@ -379,6 +381,12 @@ Webos.UserInterface.showLoadingScreen = function() {
 			$('#webos-loading').fadeIn();
 		}
 	}
+
+	$(document).on('keyup.console.ui', function (e) {
+		if (e.which == 27) { //Esc
+			Webos.UserInterface.toggleConsole();
+		}
+	});
 };
 /**
  * Set the loading screen's text.
@@ -399,6 +407,8 @@ Webos.UserInterface.hideLoadingScreen = function() {
 	} else {
 		$('#webos-loading').fadeOut('fast');
 	}
+
+	$(document).off('keyup.console.ui');
 };
 
 /**
@@ -435,6 +445,14 @@ Webos.UserInterface.hideConsole = function() {
 };
 
 /**
+ * Toggle the console.
+ * @since 1.0beta5
+ */
+Webos.UserInterface.toggleConsole = function() {
+	$('#webos-loading-console').toggle();
+};
+
+/**
  * A user interface booter.
  * It is able to start the UI.
  * @param {Object} data The booter's data.
@@ -449,6 +467,7 @@ Webos.UserInterface.Booter = function WUserInterfaceBooter(data, name) {
 	this._id = Webos.UserInterface.Booter._list.push(this) - 1;
 	this._name = name;
 	this._loaded = false;
+	this._stylesheets = [];
 
 	Webos.Observable.call(this);
 };
@@ -511,12 +530,25 @@ Webos.UserInterface.Booter.prototype = {
 
 		//Chargement du CSS
 		this.notify('loadstateupdate', { state: 'stylesheets' });
-		var cssNbr = 0;
-		for (var index in data.css) { cssNbr++; }
-		var i = 0;
-		for (var index in data.css) {
+
+		var cssNbr = 0, index, i = 0;
+		for (index in data.css) { cssNbr++; }
+
+		var afterProcessCss = function (stylesheet) {
+			that._stylesheets.push(stylesheet);
+		};
+
+		for (index in data.css) {
 			this.notify('loadstateupdate', { state: 'stylesheets', item: index });
-			Webos.Stylesheet.insertCss(data.css[index], '#userinterface-'+this.id());
+
+			Webos.require({
+				path: index,
+				contents: data.css[index],
+				type: 'text/css',
+				styleContainer: '#userinterface-'+this.id(),
+				afterProcess: afterProcessCss
+			});
+
 			i++;
 			operation.setProgress(10 + (i / cssNbr) * 10);
 		}
@@ -524,28 +556,45 @@ Webos.UserInterface.Booter.prototype = {
 		//Chargement du Javascript
 		this.notify('loadstateupdate', { state: 'scripts' });
 		operation.setProgress(20);
+
 		var scriptsNbr = 0;
-		for (var index in data.js) { scriptsNbr++; }
-		var i = 0;
-		for (var index in data.js) {
-			(function loadUIScript(js) {
-				if (!js) {
-					return;
-				}
+		for (index in data.js) { scriptsNbr++; }
 
-				that.notify('loadstateupdate', { state: 'scripts', item: index });
+		var loadedScriptsNbr = 0;
+		var loadScript = function (js, index) {
+			if (!js) {
+				return;
+			}
 
-				js = 'try {'+js+"\n"+'} catch(error) { Webos.Error.catchError(error); }';
-				Webos.Script.run(js, index); //On execute le code
+			that.notify('loadstateupdate', { state: 'scripts', item: index });
 
-				i++;
-				operation.setProgress(20 + (i / scriptsNbr) * 70);
-			})(data.js[index]);
+			Webos.require({
+				path: index,
+				contents: js,
+				forceExec: true
+			}).on('complete', function () {
+				scriptLoaded(index);
+			});
+
+			i++;
+			operation.setProgress(20 + (i / scriptsNbr) * 70);
+		};
+		var scriptLoaded = function (index) {
+			loadedScriptsNbr++;
+
+			if (loadedScriptsNbr == scriptsNbr - 1) {
+				that.notify('dependenciesload');
+			}
+		};
+
+		i = 0;
+		for (index in data.js) {
+			loadScript(data.js[index], index);
 		}
 		this.notify('loadstateupdate', { state: 'scripts' });
 		operation.setProgress(90);
 
-		if (this._autoLoad) {
+		if (!this._async) {
 			this.finishLoading();
 		}
 
@@ -553,20 +602,35 @@ Webos.UserInterface.Booter.prototype = {
 	},
 	/**
 	 * Disable autoload.
-	 * The function Webos.UserInterface.Booter#finishLoading() should be called.
+	 * The function `finishLoading()` should be called.
+	 * @deprecated Use `async()` instead.
 	 */
 	disableAutoLoad: function() {
-		this._autoLoad = false;
+		this._async = true;
+	},
+	/**
+	 * Make this booter asynchronous.
+	 * @return {Function} A function to call when the interface is ready.
+	 */
+	async: function () {
+		var that = this;
+
+		this._async = true;
+
+		return function () {
+			that.finishLoading();
+		};
 	},
 	/**
 	 * Notify that the UI is loaded.
+	 * @private
 	 */
 	finishLoading: function () {
 		if (this.loaded()) {
 			return;
 		}
 
-		delete this._autoLoad;
+		delete this._async;
 
 		this.notify('loadstateupdate', { state: 'cleaning' });
 
@@ -600,6 +664,13 @@ Webos.UserInterface.Booter.prototype = {
 
 		//Il est plus rapide de vider l'element dans un premier temps, puis de l'enlever
 		this.element().empty().remove();
+
+		//Remove stylesheets
+		for (var i = 0; i < this._stylesheets.length; i++) {
+			Webos.Stylesheet.removeCss(this._stylesheets[i]);
+		}
+
+		this.notify('unload');
 	}
 };
 Webos.inherit(Webos.UserInterface.Booter, Webos.Observable);

@@ -5,17 +5,17 @@ var GConf = function (category) {
 
 	var that = this;
 
-	this.bind('translationsloaded', function() {
+	this.once('translationsloaded', function() {
 		var that = this, t = this._translations;
 
 		this._window = $.w.window.main({
 			title: t.get('System settings'),
 			resizable: false,
-			icon: new W.Icon('apps/administration'),
+			icon: 'apps/administration',
 			stylesheet: '/usr/share/css/gconf/main.css',
 			width: 740
 		});
-		
+
 		this._categories = undefined;
 		
 		this._showCategories = function(categories) {
@@ -48,13 +48,19 @@ var GConf = function (category) {
 				if (!params[cat]) {
 					params[cat] = $();
 				}
+				if (!catTitles[cat]) {
+					catTitles[cat] = cat;
+				}
 
 				params[cat] = params[cat].add(generateItemFn(data));
 			}
 
-			for (var catName in params) {
+			for (var catName in catTitles) {
 				var catTitle = catName;
 
+				if (!params[catName] || !params[catName].length) {
+					continue;
+				}
 				if (catTitles[catName]) {
 					catTitle = catTitles[catName];
 				}
@@ -143,16 +149,14 @@ var GConf = function (category) {
 				path: '/usr/lib/gconf/categories/js/'+name+'.js',
 				context: thisProcess,
 				arguments: {
-					args: new W.Arguments({
-						params: [that._window]
-					})
-				}
-			}, [function () {
-				that._window.window('loading', false);
-			}, function (resp) {
-				that._window.window('loading', false);
-				resp.triggerError();
-			}]);
+					args: new W.Arguments([that._window])
+				},
+				process: function () {
+					that._window.window('loading', false);
+					return true; //Process the file normally
+				},
+				forceExec: true
+			});
 		};
 		
 		this.search = function(value) {

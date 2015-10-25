@@ -2,7 +2,6 @@
 namespace lib;
 
 use Ratchet\Http\HttpServerInterface;
-use Ratchet\Http\HttpServer;
 use Ratchet\ConnectionInterface;
 use Guzzle\Http\Message\RequestInterface;
 use Guzzle\Http\Message\Response;
@@ -12,6 +11,9 @@ use \Exception;
  * HTTP PeerJS server.
  */
 class PeerHttpServer implements HttpServerInterface {
+	const PEERID_LENGTH = 10;
+	const ALLOW_DISCOVERY = 1;
+
 	protected $peerServer;
 
 	public function __construct(PeerServer $peerServer) {
@@ -19,20 +21,16 @@ class PeerHttpServer implements HttpServerInterface {
 	}
 
 	public function onOpen(ConnectionInterface $from, RequestInterface $request = null) {
-		echo "New HTTP connection!\n";
-
-		//Variables in URLs are not supported in Ratchet for now
-		//See https://github.com/cboden/Ratchet/pull/143
 		$requestPath = $request->getPath();
 		$pathParts = explode('/', preg_replace('#^/peerjs/#', '', $requestPath)); //Remove /peerjs
 		$action = array_pop($pathParts);
-		$peerToken = array_pop($pathParts);
-		$peerId = array_pop($pathParts);
-		$key = array_pop($pathParts);
+
+		$query = $request->getQuery();
+		$peerId = (isset($query['id'])) ? $query['id'] : null;
+		$peerToken = (isset($query['token'])) ? $query['token'] : null;
 
 		$respStatus = 200;
 		$respHeaders = array(
-			'X-Powered-By' => \Ratchet\VERSION,
 			'Access-Control-Allow-Origin' => '*'
 		);
 		$respBody = null;
@@ -43,11 +41,25 @@ class PeerHttpServer implements HttpServerInterface {
 
 				if ($peerId === null) {
 					do {
-						$peerId = sha1(uniqid('', true) . mt_rand());
+						$peerId = substr(sha1(uniqid('', true) . mt_rand()), 0, self::PEERID_LENGTH);
 					} while ($this->peerServer->peerIdExists($peerId));
 				}
 
 				$respBody = $peerId;
+				break;
+			case 'peers':
+				if (self::ALLOW_DISCOVERY) {
+					$peers = $this->peerServer->listPeers();
+					$list = array();
+
+					foreach ($peers as $peer) {
+						$list[] = $peer['id'];
+					}
+
+					$respBody = $list;
+				} else {
+					$respStatus = 401; // Access denied
+				}
 				break;
 			case 'offer':
 			case 'candidate':
@@ -56,6 +68,11 @@ class PeerHttpServer implements HttpServerInterface {
 				//TODO: start streaming?
 			default:
 				$respStatus = 400; //Bad request
+		}
+
+		if (is_array($respBody)) { // Encode to JSON
+			$respHeaders['Content-Type'] = 'application/json';
+			$respBody = json_encode($respBody);
 		}
 
 		//Send response

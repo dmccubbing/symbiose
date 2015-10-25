@@ -1,7 +1,8 @@
 Webos.require([
 	'/usr/lib/jquery.filedrop.js',
 	'/usr/lib/fileuploader.js',
-	'/usr/lib/webos/applications.js'
+	'/usr/lib/webos/applications.js',
+	'/usr/lib/webos/data.js'
 ], function() {
 	(function($) {
 		$.fn.setCursorPosition = function(pos1, pos2) {
@@ -22,15 +23,22 @@ Webos.require([
 
 	$.webos.widget('nautilus', 'container', {
 		_name: 'nautilus',
+		_translationsName: 'nautilus',
+		_organizedIconsConfig: 'nautilus-icons',
 		options: {
 			directory: '~',
 			multipleWindows: false,
 			uploads: [],
 			display: 'icons',
 			showHiddenFiles: false,
-			_items: {}
+			organizeIcons: false,
+			organizeIconsInGrid: true,
+			_items: {},
+			_history: {
+				locations: [],
+				currentIndex: -1
+			}
 		},
-		_translationsName: 'nautilus',
 		_create: function() {
 			this._super('_create');
 
@@ -108,6 +116,139 @@ Webos.require([
 			//Webos.User.bind('login logout', function() {
 			//	that.refresh();
 			//});
+			
+			// Context menus
+			var t = this.translations();
+			(function () {
+				var contextmenu = $.w.contextMenu(that.element, 'li');
+				var item;
+
+				// For files
+				var getItemsSelection = function () {
+					return (that.getSelection().length === 0) ? item : that.getSelection();
+				};
+				var getFilesSelection = function () {
+					var files = [];
+					getItemsSelection().each(function() {
+						files.push($(this).data('file')());
+					});
+					return files;
+				};
+
+				var menuItems = {
+					open: $.webos.menuItem(t.get('Open')).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').open();
+						});
+					}),
+					openWith: $.webos.menuItem(t.get('Open with...')).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').openWith();
+						});
+					}),
+					download: $.webos.menuItem(t.get('Download')).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').download();
+						});
+					}),
+					rename: $.webos.menuItem(t.get('Rename...'), true).click(function() {
+						item.data('nautilus').rename();
+					}),
+					'delete': $.webos.menuItem(t.get('Delete')).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').remove();
+						});
+					}),
+					copy: $.webos.menuItem(t.get('Copy'), true).click(function() {
+						Webos.Clipboard.copy(getFilesSelection());
+					}),
+					cut: $.webos.menuItem(t.get('Cut')).click(function() {
+						Webos.Clipboard.cut(getFilesSelection());
+					}),
+					paste: $('<span></span>'),
+					share: $.webos.menuItem(t.get('Share'), true).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').share();
+						});
+					}),
+					properties: $.webos.menuItem(t.get('Properties')).click(function() {
+						getItemsSelection().each(function() {
+							$(this).data('nautilus').openProperties();
+						});
+					})
+				};
+				for (var i in menuItems) {
+					menuItems[i].appendTo(contextmenu);
+				}
+
+				contextmenu.on('contextmenuopen', function (e) {
+					item = $(e.originalEvent.currentTarget);
+					if (!item.is('.active')) {
+						that.getSelection().removeClass('active').trigger('unselect');
+						item.addClass('active');
+					}
+
+					var clipboardAvailable = !!Webos.Clipboard,
+						file = item.data('file')(),
+						isDir = file.get('is_dir');
+
+					menuItems.copy.toggle(clipboardAvailable);
+					menuItems.cut.toggle(clipboardAvailable);
+					if (clipboardAvailable) {
+						if (!isDir) {
+							menuItems.paste.hide();
+						} else {
+							menuItems.paste.replaceWith(that._getPasteMenuItem(file));
+						}
+					}
+				});
+			})();
+
+			// For current dir
+			(function () {
+				var contextmenu = $.w.contextMenu(that.element, 'ul');
+
+				var menuItems = {
+					newFolder: $.webos.menuItem(t.get('Create a new folder')).click(function() {
+						that.createFile(t.get('New folder'), true);
+					}),
+					newFile: $.webos.menuItem(t.get('Create a new file')).click(function() {
+						that.createFile(t.get('New file'));
+					}),
+					download: $.webos.menuItem(t.get('Download'), true).click(function() {
+						that._download(W.File.get(that.options.directory));
+					}),
+					upload: $.webos.menuItem(t.get('Upload a file')).click(function() {
+						that.openUploadWindow();
+					}),
+					paste: $('<span></span>'),
+					refresh: $.webos.menuItem(t.get('Refresh'), true).click(function() {
+						that.refresh();
+					}),
+					resetIconsPosition: $.webos.menuItem(t.get('Reset icons position')).click(function() {
+						that._resetIconsPosition();
+					}),
+					properties: $.webos.menuItem(t.get('Properties'), true).click(function() {
+						that._openProperties(W.File.get(that.options.directory));
+					})
+				};
+
+				for (var i in menuItems) {
+					menuItems[i].appendTo(contextmenu);
+				}
+
+				contextmenu.on('contextmenuopen', function (e) {
+					var clipboardAvailable = !!Webos.Clipboard;
+
+					if (clipboardAvailable) {
+						var pasteMenuItem = that._getPasteMenuItem(W.File.get(that.options.directory));
+						pasteMenuItem.menuItem('option', 'separator', true);
+						menuItems.paste.replaceWith(pasteMenuItem);
+					}
+
+					menuItems.resetIconsPosition.toggle(that.options.organizeIcons);
+				});
+			})();
 
 			this.readDir(this.options.directory);
 		},
@@ -144,7 +285,7 @@ Webos.require([
 							.css('position','absolute')
 							.appendTo(that.content());
 						
-						$(document).bind('mousemove.'+that.id()+'.nautilus.widget.webos', function(e) {
+						$(document).on('mousemove.'+that.id()+'.nautilus.widget.webos', function(e) {
 							var x1 = pos[0], y1 = pos[1], x2 = e.pageX - diff[0], y2 = e.pageY - diff[1], tmp;
 							if (x1 > x2) { tmp = x2; x2 = x1; x1 = tmp; }
 							if (y1 > y2) { tmp = y2; y2 = y1; y1 = tmp; }
@@ -203,78 +344,38 @@ Webos.require([
 		},
 		readDir: function(dir, userCallback) {
 			var that = this, t = this.translations();
-			
-			if (typeof this.options._components.contextmenu != 'undefined') {
-				this.options._components.contextmenu.contextMenu('destroy');
-				delete this.options._components.contextmenu;
-			}
-			
+			var op = Webos.Operation.create();
+
 			dir = W.File.cleanPath(dir);
-			
-			userCallback = W.Callback.toCallback(userCallback, new W.Callback(function() {}, function(res) {
+
+			userCallback = W.Callback.toCallback(userCallback, [function() {}, function(res) {
 				that._handleResponseError(res, t.get('Can\'t find « ${dir} ».', { dir: dir }));
-			}));
+			}]);
+			op.addCallbacks(userCallback);
+
+			//History
+			var currentIndex = this.options._history.currentIndex,
+				locations = this.options._history.locations;
+			//User got back in the history and opens another folder
+			if (currentIndex != locations.length - 1 &&
+				locations[currentIndex] != dir) {
+				locations = locations.slice(0, this.options._history.currentIndex);
+			}
+			//If the current index is not set or the last one
+			//Check for duplicates, and add a new entry to history
+			if ((locations.length === 0 ||
+				currentIndex == locations.length - 1) &&
+				locations[currentIndex] != dir) {
+				var historyLength = locations.push(dir);
+				currentIndex = historyLength - 1;
+			}
+			this.options._history.currentIndex = currentIndex;
+			this.options._history.locations = locations;
 
 			this._trigger('readstart', { type: 'readstart' }, { location: dir });
 
 			W.File.listDir(dir, [function(files) {
 				that.options.directory = dir;
-				
-				var contextmenu;
-				that.options._components.contextmenu = contextmenu = $.w.contextMenu(that.element);
-				
-				$.webos.menuItem(t.get('Create a new folder')).click(function() {
-					that.createFile(t.get('New folder'), true);
-				}).appendTo(contextmenu);
-				$.webos.menuItem(t.get('Create a new file')).click(function() {
-					that.createFile(t.get('New file'));
-				}).appendTo(contextmenu);
-				$.webos.menuItem(t.get('Download'), true).click(function() {
-					that._download(W.File.get(dir));
-				}).appendTo(contextmenu);
-				$.webos.menuItem(t.get('Upload a file')).click(function() {
-					that.openUploadWindow();
-				}).appendTo(contextmenu);
-				if (Webos.Clipboard) {
-					var pasteItem = $.webos.menuItem(t.get('Paste'), true).click(function() {
-						var item = Webos.Clipboard.get();
-						if (item && item.is(Webos.File)) {
-							item.paste(function(file) {
-								if (item.operation() == 'cut') {
-									that._move(file, dir, function(dest) {
-										item.setData(dest);
-										item.pasted();
-									});
-								} else {
-									that._copy(file, dir, function(dest) {
-										item.pasted();
-									});
-								}
-							}, true);
-						}
-					}).appendTo(contextmenu);
-
-					var clipboardItem = Webos.Clipboard.get();
-					pasteItem.menuItem('option', 'disabled', !(clipboardItem && clipboardItem.is(Webos.File)));
-
-					var copyCallbackId = Webos.Clipboard.bind('copy cut', function(data) {
-						var item = Webos.Clipboard.get();
-						pasteItem.menuItem('option', 'disabled', !(item && item.is(Webos.File)));
-					});
-					var clearCallbackId = Webos.Clipboard.bind('clear', function() {
-						pasteItem.menuItem('option', 'disabled', true);
-					});
-					that.element.one('nautilusreadstart', function() {
-						Webos.Clipboard.unbind(copyCallbackId);
-						Webos.Clipboard.unbind(clearCallbackId);
-					});
-				}
-				$.webos.menuItem(t.get('Refresh'), true).click(function() {
-					that.refresh();
-				}).appendTo(contextmenu);
-				$.webos.menuItem(t.get('Properties'), true).click(function() {
-					that._openProperties(W.File.get(dir));
-				}).appendTo(contextmenu);
 				
 				var serverCall = new W.ServerCall({
 					'class': 'FileController',
@@ -367,7 +468,14 @@ Webos.require([
 						var sourceFile = ui.draggable.draggable('option', 'sourceFile'),
 							destFile = Webos.File.get(dir);
 
-						ui.draggable.trigger('nautilusdrop', [{ source: sourceFile, dest: destFile, droppable: that.element }]);
+						ui.draggable.trigger('nautilusdrop', [{
+							source: sourceFile,
+							dest: destFile,
+							droppable: that.element,
+							draggable: ui.draggable,
+							pageX: event.pageX,
+							pageY: event.pageY
+						}]);
 					}
 				});
 				
@@ -375,19 +483,42 @@ Webos.require([
 				
 				that._trigger('readcomplete', { type: 'readcomplete' }, { location: that.location() });
 				that._trigger('readsuccess', { type: 'readsuccess' }, { location: that.location() });
-				
-				userCallback.success(that);
+
+				op.setCompleted(that);
 			}, function(response) {
 				that._render([]);
 				
-				that._trigger('readcomplete', { type: 'readcomplete' }, { location: that.location() });
+				that._trigger('readcomplete', { type: 'readcomplete' }, {
+					location: that.location()
+				});
 
 				if (!that._trigger('readerror', { type: 'readerror' }, { location: that.location(), response: response })) {
 					return;
 				}
-				
-				userCallback.error(response);
+
+				op.setCompleted(response);
 			}]);
+
+			return op;
+		},
+		previous: function () {
+			this.goTo(-1);
+		},
+		next: function () {
+			this.goTo(1);
+		},
+		goTo: function (delta) {
+			var newIndex = this.options._history.currentIndex + parseInt(delta);
+
+			if (newIndex < 0 ||
+				newIndex > this.options._history.locations.length - 1) {
+				return;
+			}
+
+			this.options._history.currentIndex = newIndex;
+
+			var dir = this.options._history.locations[this.options._history.currentIndex];
+			this.readDir(dir);
 		},
 		search: function(query, userCallback) {
 			var that = this, t = this.translations();
@@ -399,11 +530,6 @@ Webos.require([
 			if (!query) {
 				userCallback.error(Webos.Callback.Result.error('Empty search query'));
 				return;
-			}
-
-			if (typeof this.options._components.contextmenu != 'undefined') {
-				this.options._components.contextmenu.contextMenu('destroy');
-				delete this.options._components.contextmenu;
 			}
 
 			this._trigger('searchstart', { type: 'searchstart' }, { location: that.location(), query: query });
@@ -435,18 +561,31 @@ Webos.require([
 				userCallback.error(response);
 			}]);
 		},
+		sort: function () {
+			var sortAttr = this.options.sort;
+
+			var sortedItems = this.items().detach().sort(function (a, b) {
+				return ($(a).data('file')().get(sortAttr) > $(b).data('file')().get(sortAttr));
+			});
+
+			this._insertItem(sortedItems);
+		},
 		_update: function(name, value) {
 			switch(name) {
 				case 'display':
-					this.options.display = value;
+					this.options.display = String(value);
 					this._insertContent();
 					this.readDir(this.options.directory);
+					break;
+				case 'sort':
+					this.options.sort = String(value || 'basename');
+					this.sort();
 					break;
 			}
 		},
 		_render: function(files) {
 			var that = this;
-			
+
 			if (this.options.display == 'icons') {
 				this.content().empty();
 			}
@@ -464,6 +603,7 @@ Webos.require([
 			}
 			
 			this.element.scrollPane('reload');
+			this._loadIconsPosition();
 			
 			Webos.File.bind('load._render.nautilus-'+this.id(), function(data) {
 				var newFile = data.file;
@@ -580,7 +720,11 @@ Webos.require([
 				},
 				rename: function() {
 					var file = item.data('file')();
-					
+
+					if (item.find('input[type=text]').length) { //Already renaming this file
+						return;
+					}
+
 					var renameFn = function() {
 						var name = input.val();
 						input.remove();
@@ -589,30 +733,31 @@ Webos.require([
 						if (name == file.get('basename')) { return; }
 						
 						file.rename(name);
+
+						$(document).off('click.rename.nautilus');
 					};
-					
-					var onDocClickFn = function(event) {
-						if (!input.parents().filter(event.target).length === 0) {
-							$(document).unbind('click', onDocClickFn);
-							renameFn();
-						}
-					};
-					
-					setTimeout(function() { // Delay for Mozilla
-						$(document).click(onDocClickFn);
-					}, 0);
-					
+
 					var input = $('<input />', { type: 'text' }).keydown(function(e) {
 						if (e.keyCode == 13) {
-							$(document).unbind('click', onDocClickFn);
 							renameFn();
 							e.preventDefault();
 						}
 					});
 					item.find('.filename').hide().after(input);
-					
+
+					//Let the user click in the text input
+					input.on('mousedown mouseup click', function (e) {
+						e.stopPropagation();
+					});
+
 					var pos = file.get('basename').length - ((file.get('extension')) ? (file.get('extension').length + 1) : 0);
 					input.val(file.get('basename')).focus().setCursorPosition(0, pos);
+
+					setTimeout(function () { //Delay otherwise the current click event is triggered
+						$(document).one('click.rename.nautilus', function () {
+							renameFn();
+						});
+					}, 0);
 				},
 				remove: function() {
 					that._remove(item.data('file')());
@@ -628,99 +773,7 @@ Webos.require([
 			item.dblclick(function() {
 				$(this).data('nautilus').open();
 			});
-			
-			var contextmenu = $.w.contextMenu(item);
-			
-			$.webos.menuItem(t.get('Open')).click(function() {
-				var files = (that.getSelection().length === 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').open();
-				});
-			}).appendTo(contextmenu);
-			$.webos.menuItem(t.get('Open with...')).click(function() {
-				var files = (that.getSelection().length === 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').openWith();
-				});
-			}).appendTo(contextmenu);
-			$.webos.menuItem(t.get('Download')).click(function() {
-				var files = (that.getSelection().length === 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').download();
-				});
-			}).appendTo(contextmenu);
-			$.webos.menuItem(t.get('Rename...'), true).click(function() {
-				item.data('nautilus').rename();
-			}).appendTo(contextmenu);
-			$.webos.menuItem(t.get('Delete')).click(function() {
-				var files = (that.getSelection().length === 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').remove();
-				});
-			}).appendTo(contextmenu);
-			if (Webos.Clipboard) {
-				$.webos.menuItem(t.get('Copy'), true).click(function() {
-					Webos.Clipboard.copy(file);
-				}).appendTo(contextmenu);
-				$.webos.menuItem(t.get('Cut')).click(function() {
-					Webos.Clipboard.cut(file);
-				}).appendTo(contextmenu);
 
-				if (file.get('is_dir')) {
-					var pasteItem = $.webos.menuItem(t.get('Paste')).click(function() {
-						var itemToPaste = Webos.Clipboard.get();
-						if (itemToPaste && itemToPaste.is(Webos.File)) {
-							itemToPaste.paste(function(fileToPaste) {
-								if (itemToPaste.operation() == 'cut') {
-									that._move(fileToPaste, file, function(dest) {
-										itemToPaste.setData(dest);
-										itemToPaste.pasted();
-									});
-								} else {
-									that._copy(fileToPaste, file, function(dest) {
-										itemToPaste.pasted();
-									});
-								}
-							}, true);
-						}
-					}).appendTo(contextmenu);
-
-					var clipboardItem = Webos.Clipboard.get();
-					pasteItem.menuItem('option', 'disabled', !(clipboardItem && clipboardItem.is(Webos.File)));
-
-					var copyCallbackId = Webos.Clipboard.bind('copy cut', function(data) {
-						var item = Webos.Clipboard.get();
-						pasteItem.menuItem('option', 'disabled', !(item && item.is(Webos.File)));
-					});
-					var clearCallbackId = Webos.Clipboard.bind('clear', function() {
-						pasteItem.menuItem('option', 'disabled', true);
-					});
-					that.element.one('nautilusreadstart', function() {
-						Webos.Clipboard.unbind(copyCallbackId);
-						Webos.Clipboard.unbind(clearCallbackId);
-					});
-				}
-			}
-			$.webos.menuItem(t.get('Share'), true).click(function() {
-				var files = (that.getSelection().length == 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').share();
-				});
-			}).appendTo(contextmenu);
-			$.webos.menuItem(t.get('Properties')).click(function() {
-				var files = (that.getSelection().length == 0) ? item : that.getSelection();
-				files.each(function() {
-					$(this).data('nautilus').openProperties();
-				});
-			}).appendTo(contextmenu);
-			
-			contextmenu.bind('contextmenuopen', function() {
-				if (!item.is('.active')) {
-					that.getSelection().removeClass('active').trigger('unselect');
-					item.addClass('active');
-				}
-			});
-			
 			if (file.get('is_dir')) {
 				var overIcon = that._getFileIcon(file, 'dropover');
 				item.droppable({
@@ -736,7 +789,11 @@ Webos.require([
 						var sourceFile = ui.draggable.draggable('option', 'sourceFile'),
 							destFile = item.data('file')();
 
-						ui.draggable.trigger('nautilusdrop', [{ source: sourceFile, dest: destFile, droppable: item }]);
+						ui.draggable.trigger('nautilusdrop', [{
+							source: sourceFile,
+							dest: destFile,
+							droppable: item
+						}]);
 					},
 					over: function() {
 						if (overIcon != iconPath) {
@@ -751,18 +808,39 @@ Webos.require([
 				});
 			}
 			
-			var droppableAreas = [];
+			var $dragging = $(), //Items currently being dragged
+				droppableAreas = [];
+
 			item.draggable({
 				sourceFile: file,
 				dragImage: icon.clone().css({ 'max-width': '48px', 'max-height': '48px' }),
+				start: function () {
+					var currentSel = that.getSelection();
+					if (currentSel.filter(item).length) {
+						$dragging = currentSel;
+					} else {
+						$dragging = item;
+					}
+				},
 				stop: function(event) {
 					setTimeout(function() {
-						if (droppableAreas.length == 0) {
+						if (!droppableAreas.length) {
 							return;
 						}
 
 						var doDrop = function(data) {
 							var sourceFile = data.source, destFile = data.dest;
+
+							if (data.droppable.is(that.element)) {
+								var offset = that.element.offset(),
+									dropPos = {
+										x: data.pageX - offset.left,
+										y: data.pageY - offset.top
+									};
+
+								that._setIconPos(sourceFile, dropPos);
+								return;
+							}
 
 							if (destFile.get('path') == sourceFile.get('dirname')) {
 								return;
@@ -794,28 +872,50 @@ Webos.require([
 							}]);
 						};
 
+						var handleDropArea = function (data) {
+							var drops = [data];
+
+							if ($dragging.length) {
+								drops = [];
+								$dragging.each(function () {
+									drops.push({
+										source: $(this).data('file')(),
+										dest: data.dest,
+										droppable: $(this)
+									});
+								});
+								$dragging = $();
+							}
+
+							for (var i = 0; i < drops.length; i++) {
+								doDrop(drops[i]);
+							}
+						};
+
 						if (droppableAreas.length == 1) {
-							doDrop(droppableAreas[0]);
+							handleDropArea(droppableAreas[0]);
 						} else {
+							//TODO: integrate z-index support in draggable widget
 							var maxZIndex = -1, maxZIndexArea = null;
+
+							var handleZIndex = function(zIndex, dropArea) {
+								if (/[0-9]/.test(zIndex)) {
+									zIndex = parseInt(zIndex, 10);
+									if (maxZIndex <= zIndex) {
+										maxZIndex = zIndex;
+										maxZIndexArea = dropArea;
+									}
+								}
+							};
+
 							for (var i = 0; i < droppableAreas.length; i++) {
 								var dropArea = droppableAreas[i],
 									$droppable = dropArea.droppable;
 
-								var handleZIndex = function(zIndex) {
-									if (/[0-9]/.test(zIndex)) {
-										zIndex = parseInt(zIndex);
-										if (maxZIndex <= zIndex) {
-											maxZIndex = zIndex;
-											maxZIndexArea = dropArea;
-										}
-									}
-								};
-
-								handleZIndex($droppable.css('z-index'));
+								handleZIndex($droppable.css('z-index'), dropArea);
 
 								$droppable.parents().each(function() {
-									handleZIndex($(this).css('z-index'));
+									handleZIndex($(this).css('z-index'), dropArea);
 								});
 							}
 
@@ -823,7 +923,7 @@ Webos.require([
 								maxZIndexArea = droppableAreas.pop(); //No z-index, the one which is over others is the last one
 							}
 
-							doDrop(maxZIndexArea);
+							handleDropArea(maxZIndexArea);
 						}
 
 						droppableAreas = [];
@@ -876,21 +976,225 @@ Webos.require([
 				this.content().list('content').append(item);
 			}
 		},
-		_handleError: function(error) {
-			var t = this.translations();
+		_getPasteMenuItem: function (file) {
+			var that = this, t = this.translations();
 
-			var errorWindow = $.webos.window.messageDialog({
-				type: 'error',
-				title: t.get('Error'),
-				label: error.html.message,
-				details: error.html.details,
-				closeLabel: t.get('Close')
+			var canPaste = function (itemToPaste) {
+				return (itemToPaste && (itemToPaste.is(Array) || itemToPaste.is(Webos.File)));
+			};
+
+			var pasteItem = $.webos.menuItem(t.get('Paste')).click(function() {
+				var itemToPaste = Webos.Clipboard.get();
+
+				if (canPaste(itemToPaste)) {
+					itemToPaste.paste(function(filesToPaste) {
+						var handleFile = function (fileToPaste) {
+							if (itemToPaste.operation() == 'cut') {
+								that._move(fileToPaste, file, function(dest) {
+									itemToPaste.setData(dest);
+									itemToPaste.pasted();
+								});
+							} else {
+								that._copy(fileToPaste, file, function(dest) {
+									itemToPaste.pasted();
+								});
+							}
+						};
+
+						if (filesToPaste instanceof Array) {
+							for (var i = 0; i < filesToPaste.length; i++) {
+								var fileToPaste = filesToPaste[i];
+
+								//Not a file
+								if (!Webos.isInstanceOf(fileToPaste, Webos.File)) {
+									continue;
+								}
+
+								handleFile(fileToPaste);
+							}
+						} else {
+							handleFile(filesToPaste);
+						}
+					}, true);
+				}
 			});
 
-			errorWindow.window('open');
+			var clipboardItem = Webos.Clipboard.get();
+			pasteItem.menuItem('option', 'disabled', !canPaste(clipboardItem));
+
+			var copyCallbackId = Webos.Clipboard.bind('copy cut', function(data) {
+				var item = Webos.Clipboard.get();
+				pasteItem.menuItem('option', 'disabled', !canPaste(item));
+			});
+			var clearCallbackId = Webos.Clipboard.bind('clear', function() {
+				pasteItem.menuItem('option', 'disabled', true);
+			});
+			that.element.one('nautilusreadstart', function() {
+				Webos.Clipboard.unbind(copyCallbackId);
+				Webos.Clipboard.unbind(clearCallbackId);
+			});
+
+			return pasteItem;
+		},
+		_setIconPos: function (file, pos) {
+			if (!this.options.organizeIcons) {
+				return false;
+			}
+
+			file = W.File.get(file);
+
+			var $item = this.options._items[file.get('path')];
+			if (!$item) {
+				return;
+			}
+
+			var itemDim = {
+				width: $item.outerWidth(true),
+				height: $item.outerHeight(true)
+			};
+
+			var css = {
+				position: 'absolute',
+				left: pos.x - itemDim.width / 2,
+				top: pos.y - itemDim.height / 2
+			};
+
+			if (this.options.organizeIconsInGrid) { //Stick icons to grid
+				var diff = {
+					left: css.left % itemDim.width,
+					top: css.top % itemDim.height
+				};
+
+				if (diff.left > itemDim.width / 2) {
+					css.left += itemDim.width - diff.left;
+				} else {
+					css.left -= diff.left;
+				}
+				if (diff.top > itemDim.height / 2) {
+					css.top += itemDim.height - diff.top;
+				} else {
+					css.top -= diff.top;
+				}
+			}
+
+			$item.css(css);
+
+			this._saveIconsPosition();
+		},
+		_resetIconPos: function (file) {
+			if (!this.options.organizeIcons) {
+				return false;
+			}
+
+			file = W.File.get(file);
+
+			var $item = this.options._items[file.get('path')];
+			if (!$item) {
+				return;
+			}
+
+			$item.css('position', 'static');
+
+			this._saveIconsPosition();
+		},
+		_saveIconsPosition: function () {
+			var that = this;
+
+			if (!this.options.organizeIcons) {
+				return false;
+			}
+
+			Webos.DataFile.loadUserData(this._organizedIconsConfig, [function (dataFile) {
+				var items = that.options._items, itemsPos = {};
+				for (var iconPath in items) {
+					var $item = items[iconPath],
+						itemPos = $item.position(),
+						file = W.File.get(iconPath);
+
+					if ($item.css('position') !== 'absolute') {
+						continue;
+					}
+
+					itemsPos[file.get('basename')] = {
+						x: itemPos.left,
+						y: itemPos.top
+					};
+				}
+
+				dataFile.set(that.location(), itemsPos);
+				dataFile.sync([function () {}, function (resp) {
+					that._handleResponseError(resp);
+				}]);
+			}, function (resp) {
+				that._handleResponseError(resp);
+			}]);
+		},
+		_loadIconsPosition: function () {
+			var that = this;
+
+			if (!this.options.organizeIcons) {
+				return false;
+			}
+
+			Webos.DataFile.loadUserData(this._organizedIconsConfig, [function (dataFile) {
+				var dirSection = dataFile.get(that.location()) || {};
+
+				for (var basename in dirSection) {
+					that._setIconPos(that.location()+'/'+basename, dirSection[basename]);
+				}
+			}, function (resp) {
+				that._handleResponseError(resp);
+			}]);
+		},
+		_resetIconsPosition: function () {
+			var items = this.options._items;
+			for (var iconPath in items) {
+				var $item = items[iconPath];
+				$item.css('position', 'static');
+			}
+
+			this._saveIconsPosition();
+		},
+		_handleError: function(error) {
+			var that = this, t = this.translations();
+
+			var openErrWindow = function () {
+				var errorWindow = $.webos.window.messageDialog({
+					type: 'error',
+					title: t.get('Error'),
+					label: error.html.message,
+					details: error.html.details,
+					closeLabel: t.get('Close')
+				});
+
+				if (that._isWindowed()) {
+					errorWindow.window('option', 'parentWindow', that._getParentWindow());
+				}
+
+				errorWindow.window('open');
+			};
+
+			if (that._isWindowed()) {
+				var errorCtn = $.w.alertContainer().appendTo(that.options._components.container);
+
+				errorCtn.append($.w.icon('status/error', 24));
+				errorCtn.append(error.html.message);
+				errorCtn.append($.w.button(t.get('More...')).click(function () {
+					openErrWindow();
+				}));
+
+				that.options._components.filesList.hide();
+
+				that.element.one('nautilusreadstart', function () {
+					errorCtn.remove();
+					that.options._components.filesList.show();
+				});
+			} else {
+				openErrWindow();
+			}
 		},
 		_handleResponseError: function(resp, msg) {
-			if (resp.getStatusClass() == 5) { //5xx error
+			if (!resp.getStatusClass || resp.getStatusClass() == 5) { //5xx error
 				resp.triggerError(msg);
 			} else {
 				this._handleError(resp.getError(msg));
@@ -898,12 +1202,12 @@ Webos.require([
 		},
 		_openProperties: function(file, openedTab) {
 			var t = this.translations(), that = this;
-			
+
 			var propertiesWindow = $.w.window({
 				title: t.get('Properties of ${name}', { name: file.get('basename') }),
 				icon: this._getFileIcon(file),
 				resizable: false,
-				width: 400,
+				width: 500,
 				stylesheet: '/usr/share/css/nautilus/properties.css'
 			});
 
@@ -911,7 +1215,7 @@ Webos.require([
 			var dataTab = tabs.tabs('tab', t.get('General'));
 
 			var showRequestedTab = function () {
-				var tabsNames = ['info','openWith','share'];
+				var tabsNames = ['info', 'openWith', 'versions', 'share'];
 				if (typeof openedTab == 'string') {
 					var tabNo = $.inArray(openedTab, tabsNames);
 					if (tabNo >= 0) {
@@ -920,13 +1224,18 @@ Webos.require([
 				}
 			};
 
-			var displayPropertiesFn = function (file) {
+			var displayProperties = function (file) {
 				if (!file.get('is_dir')) {
-					var openTab = tabs.tabs('tab', t.get('Open with...'));
+					var openTab = tabs.tabs('tab', t.get('Open with...')),
+						versionsTab;
 
-					var openTabGenerated = false;
-					tabs.bind('tabsselect', function(e, data) {
-						if (data.tab == 1 && !openTabGenerated) { //Open with...
+					if (file.is('versionned')) {
+						versionsTab = tabs.tabs('tab', t.get('Versions'));
+					}
+
+					var openTabGenerated = false, versionsTabGenerated = false;
+					tabs.on('tabsselect', function(e, data) {
+						if (data.index == 1 && !openTabGenerated) { //Open with...
 							$.w.label(t.get('Select an application to open this file and other files of the same type :')).appendTo(openTab);
 							var list = $.w.list().appendTo(openTab);
 
@@ -949,7 +1258,7 @@ Webos.require([
 
 											var item = $.w.listItem([title]);
 
-											item.bind('listitemselect', function() {
+											item.on('listitemselect', function() {
 												selectedApp = app;
 												defineDefaultBtn.button('option', 'disabled', prefered);
 												removeDefaultBtn.button('option', 'disabled', !prefered);
@@ -1009,6 +1318,75 @@ Webos.require([
 							showAppsFn();
 
 							openTabGenerated = true;
+						} else if (versionsTab && data.index == 2 && !versionsTabGenerated) {
+							var $list = $.w.list().appendTo(versionsTab);
+
+							propertiesWindow.window('loading', true);
+							file.getLog().then(function (versions) {
+								if (!versions.length) {
+									$.w.label(t.get('This file has no versions.')).appendTo(versionsTab);
+									return;
+								}
+
+								var handleVersion = function (ver) {
+									var versionLbl = t.get('On ${authorDate} by ${authorName} (${shortHash})', {
+										authorDate: ver.get('authorDate').date,
+										authorName: ver.get('authorName'),
+										shortHash: ver.get('shortHash')
+									});
+
+									var $item = $.w.listItem(versionLbl)
+										.attr('title', ver.get('shortMessage'))
+										.data('version', ver);
+
+									return $item;
+								};
+								
+								for (var i = 0; i < versions.length; i++) {
+									var $item = handleVersion(versions[i]);
+
+									if (i === 0) {
+										$item.listItem('option', 'selected', true);
+									}
+
+									$item.appendTo($list.list('content'));
+								}
+							}, function (resp) {
+								resp.triggerError();
+							}).always(function () {
+								propertiesWindow.window('loading', false);
+							});
+
+							var getFileAtVersion = function () {
+								var $selection = $list.list('selection').first();
+
+								if (!$selection.length) {
+									return;
+								}
+
+								var version = $selection.data('version');
+
+								return version.getFile(file.get('path'));
+							};
+
+							var $openBtn = $.w.button(t.get('Open this version')).click(function () {
+								var oldFile = getFileAtVersion();
+
+								that._openFile(oldFile);
+							});
+							$list.list('addButton', $openBtn);
+							
+							var $restoreBtn = $.w.button(t.get('Restore')).click(function () {
+								var oldFile = getFileAtVersion();
+
+								propertiesWindow.window('loading', true);
+								oldFile.restore().always(function () {
+									propertiesWindow.window('loading', false);
+								});
+							});
+							$list.list('addButton', $restoreBtn);
+
+							versionsTabGenerated = true;
 						}
 					});
 				}
@@ -1021,7 +1399,11 @@ Webos.require([
 					data.push(t.get('Location : ${location}', { location: file.get('dirname') }));
 				}
 				if (file.exists('size')) {
-					data.push(t.get('Size : ${size}', { size: W.File.bytesToSize(file.get('size')) }));
+					if (file.get('is_dir')) {
+						data.push(t.get('Contents : ${size} file${size|s}', { size: file.get('size') }));
+					} else {
+						data.push(t.get('Size : ${size}', { size: W.File.bytesToSize(file.get('size')) }));
+					}
 				}
 				if (file.exists('atime')) {
 					var atime = new Date(file.get('atime') * 1000);
@@ -1035,7 +1417,27 @@ Webos.require([
 					data.push(t.get('Available space : ${availableSpace}', { availableSpace: W.File.bytesToSize(file.get('available_space')) }));
 				}
 
-				dataTab.append('<img src="'+that._getFileIcon(file)+'" alt="" class="image"/><ul><li>'+data.join('</li><li>')+'</li></ul>');
+				dataTab.append('<img src="'+that._getFileIcon(file)+'" alt="" class="image"/>');
+
+				var $dataCtn = $('<div></div>', { 'class': 'data-ctn' }).appendTo(dataTab);
+				$dataCtn.append('<ul class="file-data"><li>'+data.join('</li><li>')+'</li></ul>');
+				
+				var currentTags = file.get('tags') || '';
+				$dataCtn.append($.w.textEntry(t.get('Tags : '), currentTags).change(function () {
+					var newTags = $(this).textEntry('value');
+
+					if (newTags == currentTags) {
+						return;
+					}
+
+					file.set('tags', newTags);
+
+					file.sync([function () {}, function (resp) {
+						resp.triggerError();
+					}]);
+				}));
+
+
 				var buttons = $.w.buttonContainer().appendTo(propertiesWindow.window('content'));
 				$.w.button(t.get('Close')).appendTo(buttons).click(function() {
 					propertiesWindow.window('close');
@@ -1046,6 +1448,15 @@ Webos.require([
 
 				$.w.label(t.get('You can share this file to make it publicly accessible for users who have the link :')).appendTo(shareTab);
 
+				var shared = function (shareData) {
+					var shareLink = document.createElement("a");
+					shareLink.href = shareData.url;
+					var shareUrl = shareLink.href;
+
+					var shareResult = $.w.label(t.get('Public URL:') + ' <a href="'+shareUrl+'" target="_blank">'+shareUrl+'</a>');
+					shareBtn.replaceWith(shareResult);
+				};
+
 				var shareBtn = $.w.button(t.get('Share this file'))
 					.click(function() {
 						propertiesWindow.window('loading', true);
@@ -1054,22 +1465,24 @@ Webos.require([
 						file.share([function(shareData) {
 							propertiesWindow.window('loading', false);
 
-							var shareLink = document.createElement("a");
-							shareLink.href = shareData.url;
-							var shareUrl = shareLink.href;
-
-							var shareResult = $.w.label(t.get('Public URL:') + ' <a href="'+shareUrl+'" target="_blank">'+shareUrl+'</a>');
-							shareBtn.replaceWith(shareResult);
+							shared(shareData);
 						}, function(res) {
 							propertiesWindow.window('loading', false);
 							that._handleResponseError(res);
 						}]);
 					})
 					.appendTo(shareTab);
+
+				if (file.is('shared')) {
+					var shares = file.get('shares');
+					if (shares) {
+						shared(shares[0]); //TODO: print a shares list instead
+					}
+				}
 			};
 
 			if (file.exists('is_dir') && file.exists('size')) {
-				displayPropertiesFn(file);
+				displayProperties(file);
 				showRequestedTab();
 			} else {
 				propertiesWindow.window('loading', true);
@@ -1077,7 +1490,7 @@ Webos.require([
 				file.load([function(file) {
 					propertiesWindow.window('loading', false);
 
-					displayPropertiesFn(file);
+					displayProperties(file);
 					showRequestedTab();
 				}, function(response) {
 					propertiesWindow.window('close');
@@ -1107,6 +1520,12 @@ Webos.require([
 					that._handleResponseError(res);
 				}]);
 			}
+		},
+		_getParentWindow: function () {
+			return $.webos.widget.filter(this.element.parents(), 'window');
+		},
+		_isWindowed: function () {
+			return (this._getParentWindow().length > 0);
 		},
 		openUploadWindow: function() {
 			var that = this, t = this.translations();
@@ -1226,14 +1645,11 @@ Webos.require([
 			
 			var iconName = 'mimes/unknown';
 			
-			var exts = ['png', 'gif', 'jpeg', 'jpg', 'bmp', 'ico', 'js', 'mp3', 'ogv', 'tiff', 'php', 'ogg', 'mp4', 'html', 'zip', 'txt'];
-			for(var i = 0; i < exts.length; i++) {
-				if (exts[i] == file.get('extension')) {
-					iconName = 'mimes/'+file.get('extension');
-					break;
-				}
+			var exts = ['png', 'gif', 'jpeg', 'jpg', 'bmp', 'ico', 'js', 'mp3', 'ogv', 'tiff', 'php', 'ogg', 'mp4', 'html', 'zip', 'txt', 'odt', 'ods'];
+			if (~$.inArray(file.get('extension'), exts)) {
+				iconName = 'mimes/'+file.get('extension');
 			}
-			
+
 			if (file.get('is_dir')) {
 				iconName = 'mimes/folder';
 				
@@ -1285,30 +1701,20 @@ Webos.require([
 		_openFile: function(file) {
 			if (file.get('is_dir')) {
 				if (this.options.multipleWindows) {
-					W.Cmd.execute('nautilus "'+file.get('path')+'"');
+					W.Cmd.execute({
+						executable: 'nautilus',
+						args: [file]
+					});
 				} else {
-					this.readDir(file.get('path'));
+					this.readDir(file);
 				}
 			} else {
 				var that = this, t = this.translations();
 
 				var runOpenerFn = function() {
-					Webos.Application.listOpeners(file, function(openers) {
-						if (openers.length > 0) {
-							var prefered = openers[0];
-
-							for (var i = 0; i < openers.length; i++) {
-								if ($.inArray(file.get('extension'), openers[i].get('preferedOpen')) != -1) {
-									prefered = openers[i];
-									break;
-								}
-							}
-
-							W.Cmd.execute(prefered.get('command')+' "'+file.get('path')+'"');
-						} else {
-							that.openFileWindow(file);
-						}
-					});
+					Webos.Application.openFile(file, [function () {}, function () {
+						that.openFileWindow(file);
+					}]);
 				};
 				
 				if (file.get('extension') == 'js') {
@@ -1373,7 +1779,12 @@ Webos.require([
 					}
 					
 					fileOpenerWindow.window('close');
-					W.Cmd.execute(chosenCmd+' "'+file.get('path')+'"');
+
+					// Execute the choosen command
+					W.Cmd.execute({
+						executable: chosenCmd,
+						args: [file]
+					});
 				}).appendTo(fileOpenerWindow.window('content'));
 				
 				content.append('<strong>'+t.get('Select an application to open ${name}', { name: file.get('basename') })+' : </strong>');
@@ -1389,10 +1800,15 @@ Webos.require([
 							title = '<strong>'+title+' '+t.get('(by default)')+'</strong>';
 						}
 
-						var item = $.w.listItem([title]).bind('listitemselect', function() {
+						var item = $.w.listItem([title]).on('listitemselect', function() {
 							chosenCmd = app.get('command');
-						}).bind('listitemunselect', function() {
+						}).on('listitemunselect', function() {
 							chosenCmd = '';
+						}).dblclick(function (e) {
+							e.preventDefault();
+
+							chosenCmd = app.get('command');
+							content.submit();
 						});
 
 						if (prefered) {
@@ -1505,6 +1921,9 @@ Webos.require([
 			if (source.get('path') == dest.get('path') || (source.get('dirname') == dest.get('path') && dest.get('is_dir'))) { //Copy a file in the same dir
 				destPath = source.get('dirname')+'/'+t.get('Copy of ')+source.get('basename');
 				dest = W.File.get(destPath);
+			} else if (source.get('is_dir') && dest.get('is_dir')) {
+				destPath = dest.get('path')+'/'+source.get('basename');
+				dest = W.File.get(destPath);
 			}
 
 			var progressId = $.w.nautilus.progresses.add(0, t.get('Copying ${source} to ${dest}', { source: source.get('basename'), dest: dest.get('basename') }));
@@ -1525,6 +1944,11 @@ Webos.require([
 			source = W.File.get(source);
 			dest = W.File.get(dest);
 			callback = W.Callback.toCallback(callback);
+
+			if (source.get('is_dir') && dest.get('is_dir')) {
+				destPath = dest.get('path')+'/'+source.get('basename');
+				dest = W.File.get(destPath);
+			}
 
 			var progressId = $.w.nautilus.progresses.add(0, t.get('Moving ${source} to ${dest}', { source: source.get('basename'), dest: dest.get('basename') }));
 
@@ -1653,7 +2077,8 @@ Webos.require([
 			selectDirs: false,
 			selectMultiple: false,
 			exists: true,
-			extensions: null
+			extensions: null,
+			mime_type: ''
 		},
 		_translationsName: 'nautilus',
 		_create: function() {
@@ -1668,30 +2093,88 @@ Webos.require([
 			this.options._components.nautilus = $.w.nautilus({
 				display: 'list'
 			}).appendTo(form);
+
+			this.options._components.fallback = $('<div></div>').hide().appendTo(this.element);
 			
 			if (!this.options.exists) {
 				this.options._components.filename = $.w.textEntry(t.get('File name :')).prependTo(form);
 				var autoFill = '';
-				this.options._components.nautilus.bind('select', function(e) {
+				this.options._components.nautilus.on('select', function(e) {
 					if (that.options._components.filename.textEntry('value') === '') {
 						var filename = $(e.target).data('file')().getAttribute('basename');
 						that.options._components.filename.textEntry('value', filename);
 						autoFill = filename;
 					}
-				});
-				this.options._components.nautilus.bind('nautilusreadstart', function() {
+				}).on('nautilusreadstart', function() {
 					if (that.options._components.filename.textEntry('value') == autoFill) {
 						that.options._components.filename.textEntry('value', '');
 						autoFill = '';
 					}
 				});
+
+				this.options._components.fallback.append(t.get('Cannot save the file in this directory.'));
+
+				this.options._components.fallback.append($.w.button(t.get('Download the file')).click(function () {
+					file = new Webos.DownloadableFile({
+						mime_type: that.options.mime_type
+					});
+					var list = [file];
+
+					that._trigger('select', { type: 'select' }, {
+						selection: list,
+						parentDir: that.options._components.nautilus.nautilus('location')
+					});
+				}));
+			} else {
+				this.options._components.fallback.append(t.get('Cannot open this directory.'));
+
+				var inputCtn = $('<div></div>').css({
+					display: 'inline-block',
+					position: 'relative'
+				});
+				var input = $('<input />', {
+					type: 'file',
+					multiple: this.options.selectMultiple,
+					accept: this.options.mime_type
+				}).change(function() {
+					var files = this.files;
+
+					if (!files || files.length === 0) {
+						return;
+					}
+
+					var list = [];
+					for (var i = 0; i < files.length; i++) {
+						list.push(Webos.File.get(files[i]));
+					}
+
+					that._trigger('select', { type: 'select' }, {
+						selection: list,
+						parentDir: that.options._components.nautilus.nautilus('location')
+					});
+				}).css({
+					position: 'absolute',
+					top: 0,
+					left: 0,
+					height: '100%',
+					width: '100%',
+					margin: 0,
+					padding: 0,
+					opacity: 0,
+					zIndex: 2
+				}).appendTo(inputCtn);
+				$.w.button(t.get('Open a file from my computer')).appendTo(inputCtn);
+				this.options._components.fallback.append(inputCtn);
 			}
 			
-			this.options._components.nautilus.bind('open', function(e) {
-				if (!$(e.target).data('file')().getAttribute('is_dir')) {
+			this.options._components.nautilus.on('open', function(e) {
+				if (!$(e.target).data('file')().get('is_dir')) {
 					that._select();
 					e.preventDefault();
 				}
+			}).on('nautilusreaderror', function () {
+				form.hide();
+				that.options._components.fallback.show();
 			});
 			
 			this.options._components.buttons = {};
@@ -1699,7 +2182,9 @@ Webos.require([
 			this.options._components.buttons.cancel = $.w.button(t.get('Cancel')).click(function() {
 				that._trigger('cancel');
 			}).appendTo(buttonContainer);
-			this.options._components.buttons.submit = $.w.button(t.get('Open'), true).appendTo(buttonContainer);
+			
+			var submitBtnText = (this.options.exists) ? t.get('Open') : t.get('Save');
+			this.options._components.buttons.submit = $.w.button(submitBtnText, true).appendTo(buttonContainer);
 		},
 		_select: function() {
 			var that = this;
@@ -1922,7 +2407,7 @@ Webos.require([
 							that.options.open(local);
 						});
 					$('<img />', {
-						src: new W.Icon('actions/umount', 16),
+						src: new W.Icon('actions/media-eject-symbolic', 16),
 						alt: '',
 						title: t.get('Unmount volume')
 					}).addClass('umount').prependTo($item.listItem('column', 0));
@@ -1952,7 +2437,8 @@ Webos.require([
 		options: {
 			exists: true,
 			select: function() {},
-			selectMultiple: false
+			selectMultiple: false,
+			mime_type: ''
 		},
 		_create: function() {
 			this._super('_create');
@@ -1966,9 +2452,11 @@ Webos.require([
 					var content = $('<div></div>').css('position', 'relative').appendTo(item.listItem('column', 0));
 					
 					content.append('<img src="'+new W.Icon('devices/display', 22)+'" alt=""/> '+t.get('Computer'));
-					
+
 					var input = $('<input />', {
-						type: 'file'
+						type: 'file',
+						multiple: this.options.selectMultiple,
+						accept: this.options.mime_type
 					}).change(function() {
 						var files = this.files;
 						
@@ -2001,6 +2489,24 @@ Webos.require([
 					
 					item.appendTo(this.component('shortcuts').list('content'));
 				}
+			}
+
+			if (!this.options.exists) {
+				var item = $.w.listItem(),
+					content = item.listItem('column', 0);
+				
+				content.append('<img src="'+new W.Icon('actions/document-save', 22)+'" alt=""/> '+t.get('Download'));
+				
+				item.click(function() {
+					file = new Webos.DownloadableFile({
+						mime_type: that.options.mime_type
+					});
+					var list = [file];
+
+					that.options.select(list);
+				});
+				
+				item.appendTo(this.component('shortcuts').list('content'));
 			}
 		}
 	});

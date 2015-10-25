@@ -7,6 +7,8 @@
 
 (function($) {
 
+Webos.require('/usr/share/css/gtk/widgets.css');
+
 /**
  * Global namespace for webos' widgets.
  * @type {Object}
@@ -57,6 +59,14 @@ $.webos.widget = function(widgetName) {
 
 	var fullWidgetName = $.webos.widget.namespace() + '.' + widgetName;
 	if (parentWidget) {
+		if (parentWidget.prototype.widgetClasses) {
+			if (properties.widgetClasses) {
+				properties.widgetClasses += ' '+parentWidget.prototype.widgetClasses;
+			} else {
+				properties.widgetClasses = parentWidget.prototype.widgetClasses;
+			}
+		}
+
 		$.widget(fullWidgetName, parentWidget, properties);
 	} else {
 		$.widget(fullWidgetName, properties);
@@ -260,16 +270,20 @@ $.webos.widget.prototype = {
 		if (typeof Webos.Process.current() != 'undefined') {
 			var proc = Webos.Process.current();
 			this.options.pid = proc.getPid();
-			proc.bind('stop', function() {
+			/*proc.bind('stop', function() {
 				var $el = that.element;
 
 				if ($el.length > 0 && $el.closest('html').length > 0) {
 					$el.empty().remove();
 				}
-			});
+			});*/
 		}
 		this.element.addClass('webos-'+this._name);
 		this.element.attr('id', 'webos-widget-'+this.options.id);
+
+		if (this.widgetClasses) {
+			this.element.addClass(this.widgetClasses);
+		}
 	},
 	/**
 	 * Get this widget's id.
@@ -1019,6 +1033,7 @@ $.webos.image = function(src, title, loadHidden) {
  * An image.
  */
 $.webos.image.prototype = {
+	_name: 'image',
 	/**
 	 * Options:
 	 *  - `src`: the image's source path
@@ -1222,20 +1237,26 @@ $.webos.icon = function(src, size) {
  * An icon.
  */
 $.webos.icon.prototype = {
+	_name: 'icon',
 	/**
 	 * Options:
 	 *  - `src`: the icon's name
 	 *  - `size`: the icon's size
+	 *  - `variant`: the icon's variant (can be `dark` or `light`)
 	 */
 	options: {
 		src: '',
-		size: undefined
+		size: undefined,
+		variant: ''
 	},
 	_create: function() {
 		this._super('_create');
 
 		if (this.options.size) {
 			this.option('size', this.options.size);
+		}
+		if (this.options.variant) {
+			this.option('variant', this.options.variant);
 		}
 	},
 	_update: function(key, value) {
@@ -1259,17 +1280,27 @@ $.webos.icon.prototype = {
 				break;
 			case 'size':
 				value = parseInt(value);
-				this.options.src.size = value;
+				this.options.src.setSize(value);
 				this.element.css({
 					width: value,
 					height: value
 				});
 				this.load();
 				break;
+			case 'variant':
+				value = String(value);
+				this.element.removeClass('icon-'+this.options.variant).addClass('icon-'+value);
+				this.options.variant = value;
+				break;
 		}
 	}
 };
 $.webos.widget('icon', 'image');
+
+$.webos.icon._svgFilters = {
+	dark: $('<div style="width:0;height:0;overflow:hidden;"><svg height="0" xmlns="http://www.w3.org/2000/svg"><filter id="webos-icon-brightness-darker"><feComponentTransfer><feFuncR type="linear" slope="0.3"/><feFuncG type="linear" slope="0.3"/><feFuncB type="linear" slope="0.3"/></feComponentTransfer></filter></svg></div>').appendTo('body')
+};
+
 
 /**
  * A progress bar.
@@ -1287,25 +1318,31 @@ $.webos.progressbar = function(value) {
  */
 $.webos.progressbar.prototype = {
 	_name: 'progressbar',
+	widgetClasses: 'progress',
 	/**
 	 * Options:
 	 *  - _Number_ `value`: the progress bar value
 	 * @type {Object}
 	 */
 	options: {
-		value: 0
+		value: 0,
+		label: ''
 	},
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<div></div>').appendTo(this.element);
-		this.element.append(this.content());
-		this.value(this.options.value);
+		this.options._content = $('<div></div>').addClass('progress-bar').appendTo(this.element);
+
+		this.option('value', this.options.value);
+		this.option('label', this.options.label);
 	},
 	_update: function(key, value) {
 		switch(key) {
 			case 'value':
 				this.value(value);
+				break;
+			case 'label':
+				this.content().html(value);
 				break;
 		}
 	},
@@ -1348,9 +1385,27 @@ $.webos.buttonContainer = function() {
  * A button container.
  */
 $.webos.buttonContainer.prototype = {
-	_name: 'button-container'
+	_name: 'button-container',
+	//widgetClasses: 'btn-toolbar'
 };
 $.webos.widget('buttonContainer', 'container');
+
+/**
+ * A button group.
+ * @constructor
+ * @augments $.webos.container
+ */
+$.webos.buttonGroup = function() {
+	return $('<div></div>').buttonGroup();
+};
+/**
+ * A button container.
+ */
+$.webos.buttonGroup.prototype = {
+	_name: 'button-group',
+	widgetClasses: 'btn-group'
+};
+$.webos.widget('buttonGroup', 'container');
 
 /**
  * A button.
@@ -1360,7 +1415,7 @@ $.webos.widget('buttonContainer', 'container');
  * @augments $.webos.container
  */
 $.webos.button = function(label, submit) {
-	return $('<span></span>').button({
+	return $('<button></button>').attr('type', 'button').button({
 		label: label,
 		submit: submit
 	});
@@ -1386,6 +1441,7 @@ $.webos.button.prototype = {
 		showLabel: true
 	},
 	_name: 'button',
+	widgetClasses: 'btn btn-default',
 	_create: function() {
 		this._super('_create');
 
@@ -1416,12 +1472,20 @@ $.webos.button.prototype = {
 				} else {
 					this.content().unbind('click', submitFn);
 				}
+				this.element.toggleClass('submit', (value) ? true : false);
 				break;
 			case 'label':
 				this.content().html(value);
 				break;
 			case 'disabled':
-				this.disabled(value);
+				this.options.disabled = (value) ? true : false;
+
+				if (!this.element.is('.disabled') && this.options.disabled) {
+					this.element.addClass('disabled cursor-default').attr('disabled', 'disabled');
+				}
+				if (this.element.is('.disabled') && !this.options.disabled) {
+					this.element.removeClass('disabled cursor-default').removeAttr('disabled');
+				}
 				break;
 			case 'activated':
 				this.element.toggleClass('active', (value) ? true : false);
@@ -1439,17 +1503,7 @@ $.webos.button.prototype = {
 	 * @deprecated Use option `disabled` instead.
 	 */
 	disabled: function(value) {
-		if (typeof value == 'undefined') {
-			return this.options.disabled;
-		} else {
-			this.options.disabled = (value) ? true : false;
-			if (!this.element.is('.disabled') && this.options.disabled) {
-				this.element.addClass('disabled cursor-default');
-			}
-			if (this.element.is('.disabled') && !this.options.disabled) {
-				this.element.removeClass('disabled cursor-default');
-			}
-		}
+		return this.option('disabled', value);
 	}
 };
 $.webos.widget('button', 'container');
@@ -1798,6 +1852,7 @@ $.webos.listItem.prototype = {
 	_update: function(key, value) {
 		switch(key) {
 			case 'active':
+			case 'selected':
 				this.active(value);
 				break;
 		}
@@ -2074,6 +2129,7 @@ $.webos.entryContainer = function() {
  */
 $.webos.entryContainer.prototype = {
 	_name: 'entry-container',
+	widgetClasses: 'form-horizontal',
 	_create: function() {
 		this._super('_create');
 		
@@ -2107,6 +2163,7 @@ $.webos.entry.prototype = {
 		disabled: false
 	},
 	_name: 'entry',
+	widgetClasses: 'form-group',
 	_create: function() {
 		this._super('_create');
 		
@@ -2282,7 +2339,7 @@ $.webos.textEntry.prototype = {
 	_create: function() {
 		this._super('_create');
 
-		this.options._content = $('<input />', { type: 'text' });
+		this.options._content = $('<input />', { type: 'text' }).addClass('form-control');
 		this.element.append(this.options._content);
 
 		this.value(this.options.value);
@@ -2397,7 +2454,7 @@ $.webos.searchEntry.prototype = {
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<input />', { type: 'text' });
+		this.options._content = $('<input />', { type: 'text' }).addClass('form-control');
 		this.element.append(this.options._content);
 
 		this.value(this.options.value);
@@ -2425,7 +2482,7 @@ $.webos.passwordEntry.prototype = {
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<input />', { type: 'password' });
+		this.options._content = $('<input />', { type: 'password' }).addClass('form-control');
 		this.element.append(this.options._content);
 
 		this.option('disabled', this.options.disabled);
@@ -2469,7 +2526,7 @@ $.webos.numberEntry.prototype = {
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<input />', { type: 'number' });
+		this.options._content = $('<input />', { type: 'number' }).addClass('form-control');
 		this.element.append(this.options._content);
 		
 		this.option('min', this.options.min);
@@ -2528,7 +2585,7 @@ $.webos.emailEntry.prototype = {
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<input />', { type: 'email' });
+		this.options._content = $('<input />', { type: 'email' }).addClass('form-control');
 		this.element.append(this.options._content);
 
 		this.value(this.options.value);
@@ -2672,13 +2729,14 @@ $.webos.radioButton.prototype = {
 		value: false
 	},
 	_create: function() {
+		var that = this;
+
 		this._super('_create');
 		
 		this.options._content = $('<input />', { type: 'radio' }).change(function() {
-			$(this).parents('.webos-radiobutton-container').first().find(':checked').not(this).prop('checked', false);
-		});
-		
-		this.element.prepend(this.options._content);
+			that.option('value', $(this).prop('checked'));
+		}).prependTo(this.element);
+
 		this.value(this.options.value);
 		this.option('disabled', this.options.disabled);
 
@@ -2687,7 +2745,7 @@ $.webos.radioButton.prototype = {
 				return;
 			}
 
-			that.option('value', !that.options.value);
+			that.option('value', true);
 		});
 	},
 	value: function(value) {
@@ -2695,6 +2753,8 @@ $.webos.radioButton.prototype = {
 			return this.content().prop('checked');
 		} else {
 			this.options.value = (value) ? true : false;
+
+			this.content().parents('.webos-radiobutton-container').first().find(':checked').prop('checked', false);
 			this.content().prop('checked', this.options.value);
 		}
 	}
@@ -2729,7 +2789,7 @@ $.webos.selectButton.prototype = {
 	_create: function() {
 		this._super('_create');
 		
-		this.options._content = $('<select></select>').appendTo(this.element);
+		this.options._content = $('<select></select>').addClass('form-control').appendTo(this.element);
 		this._setChoices(this.options.choices);
 
 		this.value(this.options.value);
@@ -2952,7 +3012,7 @@ $.webos.menuItem.prototype = {
 				return;
 			}
 			
-			if (e.type == 'mouseenter' && $menu.parents('li.webos-menuitem').length == 0) {
+			if (e.type == 'mouseenter' && $menu.parents('.webos-menuitem').length == 0) {
 				return;
 			}
 			
@@ -2960,7 +3020,7 @@ $.webos.menuItem.prototype = {
 				$menuContents.show();
 			} else if (e.type == 'click') {
 				$menu.removeClass('hover');
-				$menu.parents('li.webos-menuitem ul li').hide();
+				$menu.parents('.webos-menuitem ul .webos-menuitem').hide();
 				return;
 			}
 			
@@ -2969,7 +3029,7 @@ $.webos.menuItem.prototype = {
 			var onDocClickFn = function(e) {
 				//Si on clique sur le menu
 				if ($(e.target).parents().filter($menu).length > 0) {
-					if ($(e.target).parents().filter('li.webos-menuitem').first().children('ul').children().length > 0) {
+					if ($(e.target).parents().filter('.webos-menuitem').first().children('ul').children().length > 0) {
 						return;
 					}
 				}
@@ -2985,7 +3045,7 @@ $.webos.menuItem.prototype = {
 		}).bind('mouseleave', function() {
 			var $menu = that.element, $menuContents = that.content();
 			
-			if ($menu.parents('li.webos-menuitem').length == 0) {
+			if ($menu.parents('.webos-menuitem').length == 0) {
 				return;
 			}
 			
@@ -3051,6 +3111,7 @@ $.webos.tabs.prototype = {
 			this.options._components.tabs = this.element.children('ul').addClass('tabs');
 			
 			var $tabsTitles = this.options._components.tabs.children();
+			$tabsTitles.addClass('tab-btn');
 			if ($tabsTitles.filter('.active').length) {
 				activeTab = $tabsTitles.filter('.active').index();
 			}
@@ -3065,8 +3126,9 @@ $.webos.tabs.prototype = {
 			this.options._components.content = $('<div></div>', { 'class': 'contents' }).appendTo(this.element);
 		}
 
-		this.options._components.tabs.on('click', 'li', function(e) {
-			that.option('selectedTab', $(this).index());
+		this.options._components.tabs.on('click', 'li.tab-btn', function(e) {
+			var foreignNbr = that.options._components.tabs.children().filter(':not(li.tab-btn)').length;
+			that.option('selectedTab', $(this).index() - foreignNbr);
 		});
 	},
 	/**
@@ -3078,7 +3140,7 @@ $.webos.tabs.prototype = {
 	 */
 	tab: function(arg0, arg1, arg2) {
 		var index, title, contents;
-		
+
 		if (typeof arg0 == 'undefined') {
 			index = 0;
 		} else if (typeof arg1 == 'undefined' && typeof arg0 == 'string') {
@@ -3096,10 +3158,13 @@ $.webos.tabs.prototype = {
 			title = arg1;
 			contents = arg2;
 		}
-		
-		var tabTitle = $(), tabContents = $();
-		if (typeof index == 'undefined') {
-			tabTitle = $('<li></li>').appendTo(this.options._components.tabs);
+
+		var tabTitle = $(),
+			tabContents = $(),
+			tabsTitles = this.options._components.tabs.children('li.tab-btn'),
+			isNewTab = false;
+		if (typeof index == 'undefined' || !tabsTitles[index]) {
+			tabTitle = $('<li></li>', { 'class': 'tab-btn' }).appendTo(this.options._components.tabs);
 			tabContents = $('<div></div>').appendTo(this.options._components.content);
 			
 			if (this.options.selectedTab === null) {
@@ -3107,20 +3172,49 @@ $.webos.tabs.prototype = {
 				tabTitle.addClass('active');
 				tabContents.addClass('active');
 			}
+
+			isNewTab = true;
 		} else {
-			tabTitle = $(this.options._components.tabs.children('li')[index]);
+			tabTitle = $(tabsTitles[index]);
 			tabContents = $(this.options._components.content.children('div')[index]);
 		}
-		
-		if (typeof title != 'undefined') {
+
+		if (typeof title != 'undefined' && title !== null) {
 			tabTitle.html(title);
 		}
-		
-		if (typeof contents != 'undefined') {
+
+		if (typeof contents != 'undefined' && contents !== null) {
 			tabContents.html(contents);
 		}
-		
+
+		if (isNewTab) {
+			this._trigger('tabadd', { type: 'tabadd' }, { content: tabContents, index: index });
+		}
+
 		return tabContents;
+	},
+	removeTab: function (index) {
+		var $tabTitle = $(this.options._components.tabs.children('li.tab-btn')[index]);
+			$tabContents = $(this.options._components.content.children('div')[index]);
+
+		$tabTitle.remove();
+		$tabContents.detach();
+
+		this._trigger('tabremove', { type: 'tabremove' }, { content: $tabContents, index: index });
+
+		this._update('selectedTab', 0);
+	},
+	tabIndexFromContent: function (ctn) {
+		var $ctn = this.options._components.content.children().filter(ctn);
+
+		if (!$ctn.length) {
+			return false;
+		}
+
+		return $ctn.index();
+	},
+	countTabs: function () {
+		return this.options._components.content.children().length;
 	},
 	/**
 	 * Create some tabs.
@@ -3136,23 +3230,311 @@ $.webos.tabs.prototype = {
 	_update: function(key, value) {
 		switch (key) {
 			case 'selectedTab':
+				if (typeof value != 'number') {
+					value = this.tabIndexFromContent(value);
+				}
+
 				var index = parseInt(value);
 				if (isNaN(index)) {
 					index = 0;
 				}
+
+				var $tabTitles = this.options._components.tabs.children('li.tab-btn');
+				if (!$tabTitles[index]) {
+					return;
+				}
 				
-				this.options._components.tabs.children('li.active').removeClass('active');
+				$tabTitles.filter('.active').removeClass('active');
 				this.options._components.content.children('div.active').removeClass('active');
 				
-				$(this.options._components.tabs.children('li')[index]).addClass('active');
+				$($tabTitles[index]).addClass('active');
 				this.tab(index).addClass('active');
 
-				this._trigger('select', { type: 'select' }, { tab: index });
+				this._trigger('select', { type: 'select' }, {
+					content: this.tab(index),
+					index: index
+				});
 				break;
 		}
 	}
 };
 $.webos.widget('tabs', 'container');
+
+/**
+ * A notebook.
+ * Notebooks are a type of widget that allow showing one of multiple pages in an app, also colloquially referred to as "tab bars".
+ * @param  {Object} tabs An object associating the tab title and its contents.
+ * @constructor
+ * @augments $.webos.tabs
+ */
+$.webos.notebook = function(tabs) {
+	return $('<div></div>').notebook().notebook('setTabs', tabs);
+};
+/**
+ * A notebook.
+ */
+$.webos.notebook.prototype = {
+	_name: 'notebook'
+};
+$.webos.widget('notebook', 'tabs');
+
+/**
+ * A dynamic notebook.
+ * @param  {Object} tabs An object associating the tab title and its contents.
+ * @constructor
+ * @augments $.webos.notebook
+ */
+$.webos.dynamicNotebook = function(tabs) {
+	return $('<div></div>').dynamicNotebook().dynamicNotebook('setTabs', tabs);
+};
+/**
+ * A notebook.
+ */
+$.webos.dynamicNotebook.prototype = {
+	_create: function() {
+		this._super('_create');
+
+		var that = this;
+
+		var $newTabBtn = $('<li></li>', { 'class': 'tab-btn-newtab' }).html('+').click(function () {
+			that._trigger('newtab');
+		});
+		this.options._components.tabs.append($newTabBtn);
+	},
+	tab: function(arg0, arg1, arg2) {
+		var that = this;
+
+		var $tabCtn = this._super(arg0, arg1, arg2);
+
+		var index = $tabCtn.index(),
+			$tabTitle = $(this.options._components.tabs.children('li.tab-btn')[index]);
+		
+		if (!$tabTitle.children('.tab-btn-close').length) {
+			$closeBtn = $('<span></span>', { 'class': 'tab-btn-close' }).html('&times;').click(function () {
+				that.removeTab($tabCtn.index()); //Index can be modified
+			});
+			$tabTitle.prepend($closeBtn);
+		}
+
+		return $tabCtn;
+	}
+};
+$.webos.widget('dynamicNotebook', 'notebook');
+
+/**
+ * A popover.
+ * @param  {jQuery} toggle  The element which will toggle the popover.
+ * @param  {jQuery} content The popover content.
+ * @constructor
+ * @augments $.webos.container
+ */
+$.webos.popover = function(toggle, content) {
+	var $popover = $('<div></div>').popover();
+	$popover.popover('component', 'toggle').html(toggle || '');
+	$popover.popover('content').html(content || '');
+
+	return $popover;
+};
+/**
+ * A popover.
+ * @type {Object}
+ */
+$.webos.popover.prototype = {
+	_name: 'popover',
+	/**
+	 * Options:
+	 *  - `trigger`: the event which will toggle the popover
+	 */
+	options: {
+		trigger: 'click',
+		placement: 'bottom'
+	},
+	_create: function () {
+		this._super('_create');
+
+		var popoverToggle = this.element.children('.popover-toggle');
+		if (!popoverToggle.length) {
+			popoverToggle = $('<div></div>', { 'class': 'popover-toggle' }).prependTo(this.element);
+		}
+		this.options._components.toggle = popoverToggle;
+
+		var popoverContent = this.element.children('.popover-content');
+		if (!popoverContent.length) {
+			popoverContent = $('<div></div>', { 'class': 'popover-content' }).appendTo(this.element);
+		}
+		this.options._components.content = popoverContent;
+
+		this._update('trigger', this.options.trigger);
+		this._update('placement', this.options.placement);
+	},
+	/**
+	 * Show the popover.
+	 */
+	show: function () {
+		this.options._components.content.stop().fadeIn('fast');
+	},
+	/**
+	 * Hide the popover.
+	 */
+	hide: function () {
+		this.options._components.content.stop().fadeOut('fast');
+	},
+	/**
+	 * Toggle the popover (show/hide).
+	 */
+	toggle: function () {
+		this.options._components.content.stop().fadeToggle('fast');
+	},
+	_update: function(key, value) {
+		var that = this;
+
+		switch (key) {
+			case 'trigger':
+				value = String(value);
+
+				this.options._components.toggle.off('.toggle.popover.gtk').on(value+'.toggle.popover.gtk', function () {
+					that.toggle();
+				});
+				this.options.trigger = value;
+				break;
+			case 'placement':
+				this.element.toggleClass('popover-top', (value == 'top'));
+				break;
+		}
+	}
+};
+$.webos.widget('popover', 'container');
+
+/**
+ * An alert.
+ * @param  {jQuery} content The alert content.
+ * @constructor
+ * @augments $.webos.container
+ */
+$.webos.alertContainer = function(content) {
+	var $alert = $('<div></div>').alertContainer();
+	$alert.alertContainer('content').html(content || '');
+
+	return $alert;
+};
+/**
+ * An alert.
+ * @type {Object}
+ */
+$.webos.alertContainer.prototype = {
+	_name: 'alert-container'
+};
+$.webos.widget('alertContainer', 'container');
+
+/**
+ * A color picker.
+ * @param  {string} defaultColor The default color.
+ * @constructor
+ * @augments $.webos.container
+ */
+$.webos.colorPicker = function(defaultColor) {
+	return $('<div></div>').colorPicker({
+		color: defaultColor
+	});
+};
+/**
+ * A color picker.
+ * @type {Object}
+ */
+$.webos.colorPicker.prototype = {
+	_name: 'color-picker',
+	_paletteColors: {
+		red: ['#E78E89', '#DA4D45', '#AD2A23'],
+		orange: ['#F7A575', '#F37329', '#C14E0B'],
+		yellow: ['#FDE8AB', '#FBD25D', '#F9BC0F'],
+		green: ['#CCDF7B', '#B3CF3B', '#809525'],
+		blue: ['#8ECAF2', '#47A8E9', '#1881C8'],
+		pink: ['#D997D8', '#C35CC2', '#983897'],
+		black: ['#000', '#333', '#666', '#999', '#CCC', '#FFF']
+	},
+	options: {
+		mode: 'palette',
+		value: '#000' //Black
+	},
+	_create: function () {
+		var that = this;
+
+		this._super('_create');
+
+		// Palette
+		var $palette = $('<div></div>', { 'class': 'picker-palette' }).appendTo(this.element);
+
+		for (var paletteVaration in this._paletteColors) {
+			var variationColors = this._paletteColors[paletteVaration];
+
+			var variation = '<ul class="palette-variation palette-variation-'+paletteVaration+'">';
+			for (var i = 0; i < variationColors.length; i++) {
+				var color = variationColors[i];
+
+				variation += '<li style="background-color: '+color+';" data-color="'+color+'"></li>';
+			}
+			variation += '</ul>';
+
+			$palette.append(variation);
+		}
+
+		$palette.on('click', 'li', function () {
+			var newColor = $(this).data('color');
+
+			that.option('value', newColor);
+
+			$(this).addClass('color-picked');
+
+			that._trigger('change', { type: 'change' }, { color: newColor });
+		});
+
+		// Custom
+		var $custom = $('<div></div>', { 'class': 'picker-custom' }).hide().appendTo(this.element);
+		var $colorInput = $('<input />', { type: 'color', value: this.options.value }).change(function (e) {
+			e.stopPropagation();
+
+			var newColor = $(this).val();
+
+			that.option('value', newColor);
+			that._trigger('change', { type: 'change' }, { color: newColor });
+		}).appendTo($custom);
+	},
+	_update: function(key, value) {
+		var that = this;
+
+		switch (key) {
+			case 'value':
+				value = String(value);
+
+				this.options.value = value;
+				this.element.find('input[type="color"]').val(value);
+				this.element.find('li.color-picked').removeClass('color-picked');
+				break;
+			case 'mode':
+				var $modeCtn = this.element.children('.picker-'+value);
+
+				if (!$modeCtn.length) {
+					return false;
+				}
+
+				this.element.children().hide();
+				$modeCtn.show();
+
+				if (value == 'custom') {
+					$modeCtn.find('input[type="color"]').click();
+				}
+		}
+	},
+	supportsColorInput: function () {
+		var i = document.createElement("input");
+		i.setAttribute("type", "color");
+		return (i.type !== "text");
+	},
+	toggleMode: function () {
+		this.option('mode', (this.options.mode == 'palette') ? 'custom' : 'palette');
+	}
+};
+$.webos.widget('colorPicker', 'container');
 
 /**
  * A draggable element.

@@ -91,7 +91,7 @@ Webos.Model.prototype = {
 	 * @returns {Object} The data.
 	 */
 	data: function() {
-		return _.clone(this._data);
+		return $.extend({}, this._data);
 	},
 	/**
 	 * Set a value associated with a key in the model's data.
@@ -151,7 +151,7 @@ Webos.Model.prototype = {
 	 * @return {Boolean} True if it's empty, false otherwise.
 	 */
 	isEmpty: function () {
-		return (Object.keys(this._data).length == 0);
+		return (Object.keys(this._data).length === 0);
 	},
 	/**
 	 * Remove a value in the model's data.
@@ -198,12 +198,18 @@ Webos.Model.prototype = {
 	},
 	/**
 	 * Get changed data's keys.
+	 * @param {String[]} [filter] Keys that can be changed. By default, all keys can.
 	 * @return {String[]} Keys corresponding to changed values.
 	 */
-	changedKeys: function() {
+	changedKeys: function(filter) {
+		filter = filter || null;
+
 		var keys = [];
-		var nbrChanges = 0;
 		for (var key in this._unsynced) {
+			if (filter && !~filter.indexOf(key)) {
+				continue;
+			}
+
 			if (this._unsynced[key].state === 1) {
 				keys.push(key);
 			}
@@ -213,10 +219,11 @@ Webos.Model.prototype = {
 	},
 	/**
 	 * Get changed data.
+	 * @param {String[]} [filter] Keys that can be changed. By default, all keys can.
 	 * @return {Object} Changed data.
 	 */
-	changedData: function() {
-		var changedKeys = this.changedKeys();
+	changedData: function(filter) {
+		var changedKeys = this.changedKeys(filter);
 		var changedData = {};
 
 		for (var i = 0; i < changedKeys.length; i++) {
@@ -238,9 +245,13 @@ Webos.Model.prototype = {
 				return false;
 			}
 
-			return (this._unsynced[key].state == 1);
+			var state = this._unsynced[key].state;
+			return (state == 1 || state == 2);
 		} else {
-			return (!_.isEmpty(this._unsynced));
+			for (key in this._unsynced) {
+				return true;
+			}
+			return false;
 		}
 	},
 	/**
@@ -257,10 +268,11 @@ Webos.Model.prototype = {
 	},
 	/**
 	 * Mark changed data as going to be saved.
-	 * @return {String[]} Keys corresponding to changed values.
+	 * @param {String[]} [filter] Keys that can be changed. By default, all keys are changed.
+	 * @return {String[]} Keys corresponding to staged changes.
 	 */
-	_stageChanges: function() {
-		var changedKeys = this.changedKeys();
+	_stageChanges: function(filter) {
+		var changedKeys = this.changedKeys(filter);
 
 		for (var i = 0; i < changedKeys.length; i++) {
 			var key = changedKeys[i];
@@ -284,6 +296,17 @@ Webos.Model.prototype = {
 		}
 	},
 	/**
+	 * Unmark changed data.
+	 * @param  {String[]} changedKeys Changed keys.
+	 */
+	_unstageChanges: function (changedKeys) {
+		for (var i = 0; i < changedKeys.length; i++) {
+			var key = changedKeys[i];
+
+			this._unsynced[key].state = 1;
+		}
+	},
+	/**
 	 * Fetch this model's data from the server.
 	 * @returns {Webos.ServerCall} The server call.
 	 */
@@ -302,6 +325,7 @@ Webos.Model.prototype = {
 	/**
 	 * Save modifications on this model.
 	 * @param {Webos.Callback} callback The callback.
+	 * @deprecated Use `sync()` instead.
 	 */
 	save: function() {
 		return this.sync.apply(this, arguments);
@@ -309,12 +333,51 @@ Webos.Model.prototype = {
 	/**
 	 * Save modifications on this model.
 	 * @param {Webos.Callback} callback The callback.
-	 * @deprecated Use {@link Webos.Model#save} instead.
 	 */
-	sync: function(callback) {
+	sync: function (callback) {
 		callback = Webos.Callback.toCallback(callback);
 		
 		callback.error();
+	},
+	/**
+	 * Save locally modifications on this model (do not push changes to the server).
+	 * @param {Webos.Callback} callback The callback.
+	 */
+	localSync: function (callback) {
+		var op = Webos.Operation.createCompleted(true);
+		op.addCallbacks(callback);
+
+		var changed = this._stageChanges();
+		this._propagateChanges(changed);
+
+		return op;
+	},
+	/**
+	 * Try to push changes on this model to the server, if the user can do it. If he hasn't the required permission, only save changes locally.
+	 * @param  {Webos.Callback} callback The callback.
+	 * @return {Webos.Operation}         The operation.
+	 */
+	syncIfAllowed: function (callback) {
+		var that = this;
+		var op = Webos.Operation.create();
+		op.addCallbacks(callback);
+
+		this.sync([function () {
+			op.setCompleted();
+		}, function (res) {
+			if (typeof res.getStatusCode == 'function' && res.getStatusCode() == 403) {
+				// Save changes locally
+				that.localSync([function () {
+					op.setCompleted();
+				}, function (res) {
+					op.setCompleted(false, res);
+				}]);
+			} else {
+				op.setCompleted(false, res);
+			}
+		}]);
+
+		return op;
 	}
 };
 Webos.inherit(Webos.Model, Webos.Observable);

@@ -1,18 +1,28 @@
-//On empeche de faire defiler la page
-$(document).scroll(function() {
+var booter = Webos.UserInterface.Booter.current();
+
+//Prevent from scrolling
+$(window).add(document).scroll(function() {
 	$('body').scrollTop(0);
 });
 
-var loadThemeFn = function() {
-	//Chargement du theme
-	W.Theme.get(new W.Callback(function(theme) {
-		theme.load();
-	}, function(response) {
-		response.triggerError('Impossible de r&eacute;cup&eacute;rer les pr&eacute;f&eacute;rences d\'affichage');
-	}));
+var rootEl = Webos.UserInterface.Booter.current().element();
+rootEl.scroll(function () {
+	if (rootEl.scrollTop() > 0) {
+		rootEl.scrollTop(0);
+	}
+});
+
+var loadThemeFn = function() { //Chargement du theme
+	Webos.require('/usr/lib/webos/theme.js', function () {
+		Webos.Theme.get([function(theme) {
+			theme.load();
+		}, function(response) {
+			response.triggerError('Impossible de r&eacute;cup&eacute;rer les pr&eacute;f&eacute;rences d\'affichage');
+		}]);
+	});
 };
 
-Webos.User.bind('login logout', function() {
+Webos.User.on('login.ini.gnome logout.ini.gnome', function() {
 	loadThemeFn();
 });
 
@@ -24,10 +34,10 @@ var saveSession = function() {
 var reviveSession = function() {
 	Webos.Compiz.Reviver.revive([function() {}, function() {}]);
 };
-Webos.User.bind('beforelogout', function() {
+Webos.User.on('beforelogout.ini.gnome', function() {
 	saveSession();
 });
-Webos.User.bind('login', function() {
+Webos.User.on('login.ini.gnome', function() {
 	if (!$.webos.window.getWindows().length) { //Si aucune fenetre n'est ouverte
 		reviveSession();
 	}
@@ -43,18 +53,24 @@ Webos.Translation.load(function(t) {
 			desktopFiles = emptyDesktopFiles;
 		} else {
 			//On charge le contenu du bureau
-			Webos.require('/usr/lib/nautilus/widgets.js', function() {
+			Webos.require({
+				path: '/usr/lib/nautilus/widgets.js',
+				forceExec: true
+			}, function() {
 				var nautilusDesktopFiles = $.w.nautilus({
 					multipleWindows: true,
-					directory: t.get('~/Desktop')
+					directory: t.get('~/Desktop'),
+					organizeIcons: true
 				});
 
 				nautilusDesktopFiles.one('nautilusreadcomplete', function() {
-					resizeDesktopFn();
+					if (typeof resizeDesktopFn == 'function') {
+						resizeDesktopFn();
+					}
 				}).one('nautilusreaderror', function(e, data) {
 					data.response.logError();
 					return false;
-				});;
+				});
 
 				desktopFiles.replaceWith(nautilusDesktopFiles);
 				desktopFiles = nautilusDesktopFiles;
@@ -72,7 +88,7 @@ Webos.Translation.load(function(t) {
 		}, function() {}]);
 	};
 
-	Webos.User.bind('login logout', function(data) {
+	Webos.User.bind('login.ini.gnome logout.ini.gnome', function(data) {
 		loadDesktopFn(data.user);
 	});
 
@@ -82,3 +98,7 @@ Webos.Translation.load(function(t) {
 
 	reviveSession();
 }, 'gnome-shell');
+
+booter.once('unload', function () {
+	Webos.User.off('login.ini.gnome beforelogout.ini.gnome logout.ini.gnome');
+});

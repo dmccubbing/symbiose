@@ -4,8 +4,13 @@
  * @author $imon
  */
 
-new W.ScriptFile('/usr/lib/codemirror/codemirror.js');
-new W.Stylesheet('/usr/share/css/codemirror/main.css');
+Webos.require([
+	{
+		path: '/usr/lib/codemirror/codemirror.js',
+		exportApis: ['CodeMirror']
+	},
+	'/usr/share/css/codemirror/main.css'
+], function () {
 
 $.webos.widget('gedit', 'container', {
 	_name: 'gedit',
@@ -181,18 +186,18 @@ $.webos.gedit.loadMode = function(mode) {
 
 var GEditWindow = function (file) {
 	Webos.Observable.call(this);
-	
-	this.bind('translationsloaded', function() {
+
+	this.on('translationsloaded', function() {
 		var that = this, t = this._translations;;
 		
 		this._window = $.w.window.main({
 			title: t.get('Gedit text editor'),
-			icon: new W.Icon('apps/text-editor'),
+			icon: 'apps/text-editor',
 			width: 500,
 			height: 300,
 			stylesheet: '/usr/share/css/gedit/main.css'
 		});
-		
+
 		this._refreshTitle = function() {
 			var file = this._file;
 			
@@ -210,7 +215,7 @@ var GEditWindow = function (file) {
 			
 			this._window.window('option', 'title', title);
 		};
-		
+
 		this.openAboutWindow = function() {
 			var aboutWindow = $.w.window.about({
 				name: 'gedit',
@@ -225,16 +230,16 @@ var GEditWindow = function (file) {
 		this.open = function(file, callback) {
 			callback = W.Callback.toCallback(callback);
 			file = W.File.get(file);
-			
+
 			if (file.get('is_dir')) {
 				W.Error.trigger(t.get('The specified file is a directory'));
 				return;
 			}
-			
+
 			that._window.window('loading', true, {
 				lock: false
 			});
-			file.readAsText(new W.Callback(function(contents) {
+			file.readAsText([function(contents) {
 				that._window.window('loading', false);
 
 				that._file = file;
@@ -251,7 +256,7 @@ var GEditWindow = function (file) {
 			}, function(response) {
 				that._window.window('loading', false);
 				callback.error(response);
-			}));
+			}]);
 		};
 		
 		this.createEmptyFile = function() {
@@ -277,11 +282,15 @@ var GEditWindow = function (file) {
 				});
 				file.setContents(contents, new W.Callback(function() {
 					that._window.window('loading', false);
-					if (!that._file) {
+
+					if (!that._file && file.can('read')) {
 						that._file = file;
+						that._gedit.gedit('option', 'language', $.webos.gedit.modeFromExt(file.get('extension')));
 					}
+
 					that._isSaved = true;
 					that._refreshTitle();
+
 					callback.success(file);
 				}, function(response) {
 					that._window.window('loading', false);
@@ -298,15 +307,16 @@ var GEditWindow = function (file) {
 				}, function(paths) {
 					if (paths.length) {
 						var path = paths[0];
-						W.File.load(path, new W.Callback(function(file) {
-							saveFn(file);
-						}, function(response) {
-							W.File.createFile(path, new W.Callback(function(file) {
-								saveFn(file);
-							}, function(response) {
-								response.triggerError(t.get('Can\'t save the file "${path}"', { path: path }));
-							}));
-						}));
+
+						if (typeof path == 'string') {
+							file = W.File.get(path);
+						} else {
+							file = path;
+						}
+
+						saveFn(file);
+					} else {
+						//Operation aborded
 					}
 				});
 			}
@@ -641,3 +651,5 @@ Webos.inherit(GEditWindow, Webos.Observable);
 Webos.inherit(GEditWindow, Webos.TranslatedLibrary);
 
 window.GEditWindow = GEditWindow;
+
+});

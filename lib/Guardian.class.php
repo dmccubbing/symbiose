@@ -9,15 +9,39 @@ use \RuntimeException;
  * @since 1.0beta3
  */
 class Guardian extends ApplicationComponent {
+	protected $loggedPermissions = array(
+		'file.home.read',
+		'file.home.write',
+		'file.system.read',
+		'file.system.write',
+		'user.read',
+		'user.edit',
+		'user.manage',
+		'package.read',
+		'package.manage'
+	);
+
+	/**
+	 * Allowed protocol wrappers.
+	 * @var array
+	 * @see http://php.net/manual/en/wrappers.php
+	 */
+	protected $allowedProtocols = array('http', 'https', 'ftp', 'ftps', 'sftp');
+
 	protected function _authForArgument($arg, $requiredAuth) {
 		$finalAuth = $requiredAuth;
 
 		$app = $this->app();
+		$allowedProtocols = $this->allowedProtocols;
 
 		$authsHandlers = array(
-			'file.*' => function($path, $action) use($app) {
+			'file.*' => function($path, $action) use($app, $allowedProtocols) {
 				if ($path === null) {
 					return true;
+				}
+				if (($pos = strpos($path, '://')) !== false) {
+					$protocol = substr($path, 0, $pos);
+					return in_array($protocol, $allowedProtocols);
 				}
 
 				//Quelques nettoyages...
@@ -130,6 +154,18 @@ class Guardian extends ApplicationComponent {
 
 		$authorized = ($requiredAuth === true || in_array($requiredAuth, $providedAuthsNames));
 
+		
+		if ($requiredAuth !== true && in_array($requiredAuth, $this->loggedPermissions)) {
+			$logLine = '';
+			if (isset($_SERVER['REMOTE_ADDR'])) {
+				$logLine .= $_SERVER['REMOTE_ADDR'].' ';
+			}
+			$logLine .= ($authorized) ? 'granted' : 'denied';
+			$logLine .= ' '.$requiredAuth;
+
+			writeLog('permissions', $logLine);
+		}
+
 		if (!$authorized) {
 			throw new \RuntimeException('Permission denied (permission "'.$requiredAuth.'" is required)', 403);
 		}
@@ -144,5 +180,13 @@ class Guardian extends ApplicationComponent {
 	public function controlArgAuth($requiredAuth, $arg, $providedAuths = null) {
 		$requiredAuth = $this->_authForArgument($arg, $requiredAuth);
 		$this->controlAuth($requiredAuth, $providedAuths);
+	}
+
+	/**
+	 * Get a list of allowed protocol wrappers.
+	 * @return string[] The list of wrapper.s
+	 */
+	public function allowedProtocols() {
+		return $this->allowedProtocols;
 	}
 }

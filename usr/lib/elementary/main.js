@@ -1,6 +1,4 @@
-Webos.require([
-	'/usr/lib/webos/applications.js'
-], function() {
+Webos.require(['/usr/lib/webos/applications.js'], function() {
 	if (window.Elementary) {
 		return;
 	}
@@ -15,6 +13,7 @@ Webos.require([
 		_$appsViewBtns: $('#elementary-apps .apps-header .apps-view-btn-group'),
 		_$calendar: $('#header .calendar'),
 		_$memenu: $('#header .memenu'),
+		_fullCmds2Windows: {},
 		_cmds2Windows: {},
 		_translations: new Webos.Translation(),
 		_appsView: 'grid',
@@ -37,22 +36,37 @@ Webos.require([
 			};
 
 			//On stocke la correspondance commande <-> fenetre lors de l'ouverture des fenetres
-			$(document).on('windowopen.launcher.elementary', function(event, ui) {
-				var process = Webos.Process.get(ui.window.window('pid'));
-				if (typeof process != 'undefined') {
-					if (that._cmds2Windows[process.cmd]) {
-						that._cmds2Windows[process.cmd] = that._cmds2Windows[process.cmd].add(ui.window);
-					} else {
-						that._cmds2Windows[process.cmd] = ui.window;
+			$(document).on('windowopen.launcher.elementary', function(event, data) {
+				var $win = $(event.target);
+
+				var process = Webos.Process.get($win.window('pid'));
+				if (process) {
+					if (!that._fullCmds2Windows[process.fullCmd]) {
+						that._fullCmds2Windows[process.fullCmd] = $();
 					}
+					that._fullCmds2Windows[process.fullCmd] = that._fullCmds2Windows[process.fullCmd].add($win);
+
+					if (!that._cmds2Windows[process.cmd]) {
+						that._cmds2Windows[process.cmd] = $();
+					}
+					that._cmds2Windows[process.cmd] = that._cmds2Windows[process.cmd].add($win);
 				}
-			}).on('windowclose.launcher.elementary', function(event, ui) { //Lors de leur fermeture, on detruit cette relation
-				var process = Webos.Process.get(ui.window.window('pid'));
-				if (typeof process != 'undefined' && that._cmds2Windows[process.cmd]) {
-					if (that._cmds2Windows[process.cmd].length > 1) {
-						that._cmds2Windows[process.cmd] = that._cmds2Windows[process.cmd].not(ui.window);
-					} else {
-						delete that._cmds2Windows[process.cmd];
+			}).on('windowclose.launcher.elementary', function(event, data) { //Lors de leur fermeture, on detruit cette relation
+				var $win = $(event.target);
+
+				var process = Webos.Process.get($win.window('pid'));
+				if (typeof process != 'undefined') {
+					if (that._fullCmds2Windows[process.fullCmd]) {
+						that._fullCmds2Windows[process.fullCmd] = that._fullCmds2Windows[process.fullCmd].not($win);
+						if (!that._fullCmds2Windows[process.fullCmd].length) {
+							delete that._fullCmds2Windows[process.fullCmd];
+						}
+					}
+					if (that._cmds2Windows[process.cmd]) {
+						that._cmds2Windows[process.cmd] = that._cmds2Windows[process.cmd].not($win);
+						if (!that._cmds2Windows[process.cmd].length) {
+							delete that._cmds2Windows[process.cmd];
+						}
 					}
 				}
 			}).on('windowafteropen.launcher.elementary windowclose.launcher.elementary', function() {
@@ -136,16 +150,16 @@ Webos.require([
 				var windows = $.w.window.workspace.getCurrent().getWindows();
 
 				//Si rien n'est ouvert et qu'il n'y a aucun favori, on cache le lanceur et on s'arrete la
-				if (favorites.length == 0 && windows.length == 0) {
+				if (!favorites.length && !windows.length) {
 					that.hideLauncher();
 					return;
 				}
 
 				var generateItemFn = function(data, $currentItem) {
 					$item = $('<li></li>').addClass('app').draggable({
-						data: (data.app) ? data.app : null,
+						data: data.app || null,
 						dragImage: $('<img />', { src: data.icon.realpath(48) }).css({ height: '48px', width: '48px' })
-					});
+					}).data('app', data.app || null);
 					if ($currentItem) {
 						$currentItem.replaceWith($item);
 					}
@@ -166,56 +180,85 @@ Webos.require([
 						return $newItem;
 					}
 
-					if ($(data.windows).length) {
-						var isActive = false;
-						data.windows.each(function() {
-							if ($(this).window('is', 'foreground')) {
-								isActive = true;
-							}
-						});
-						if (isActive) {
-							$item.addClass('app-active');
-						}
-						data.windows
-							.off('windowtoforeground.launcher.elementary windowshow.launcher.elementary')
-							.on('windowtoforeground.launcher.elementary windowshow.launcher.elementary', function () {
-								$item.addClass('app-active');
-							})
-							.off('windowtobackground.launcher.elementary windowhide.launcher.elementary')
-							.on('windowtobackground.launcher.elementary windowhide.launcher.elementary', function () {
-								$item.removeClass('app-active');
-							});
-
-						$item.click(function() {
-							//if (appWindow.window('workspace').id() != $.w.window.workspace.getCurrent().id()) {
-							//	$.w.window.workspace.switchTo(appWindow.window('workspace').id());
-							//}
-
-							var isShown = false, isForeground = false;
-							data.windows.each(function () {
+					(function ($item) {
+						if ($(data.windows).length) {
+							var isActive = false;
+							data.windows.each(function() {
 								if ($(this).window('is', 'foreground')) {
-									isForeground = true;
-									if ($(this).window('is', 'visible')) {
-										isShown = true;
-										return false;
+									isActive = true;
+									return false;
+								}
+							});
+							if (isActive) {
+								$item.addClass('app-active');
+							}
+
+							var eventHandlers = {
+								'windowtoforeground.launcher.elementary windowshow.launcher.elementary': function () {
+									$item.addClass('app-active');
+								},
+								'windowtobackground.launcher.elementary windowhide.launcher.elementary': function () {
+									$item.removeClass('app-active');
+								},
+								'windowbadge.launcher.elementary': function () {
+									var badgeVal = $(this).window('option', 'badge');
+
+									if (badgeVal) {
+										$item.find('.app-badge').text(badgeVal);
+									} else {
+										$item.find('.app-badge').empty();
+									}
+								},
+								'windowloadingstart.launcher.elementary': function (e, data) {
+									$item.find('.app-progressbar').addClass('progressbar-undefined');
+								},
+								'windowloadingstop.launcher.elementary': function (e, data) {
+									$item.find('.app-progressbar').removeClass('progressbar-undefined');
+								},
+								'windowprogress.launcher.elementary': function (e, data) {
+									if (data.value == 100) {
+
+									} else {
+
+									}
+								}
+							};
+
+							for (var eventName in eventHandlers) {
+								data.windows.off(eventName).on(eventName, eventHandlers[eventName]);
+							}
+
+							$item.click(function() {
+								//if (appWindow.window('workspace').id() != $.w.window.workspace.getCurrent().id()) {
+								//	$.w.window.workspace.switchTo(appWindow.window('workspace').id());
+								//}
+
+								var isShown = false, isForeground = false;
+								data.windows.each(function () {
+									if ($(this).window('is', 'foreground')) {
+										isForeground = true;
+										if ($(this).window('is', 'visible')) {
+											isShown = true;
+											return false;
+										}
+									}
+								});
+
+								if (isShown) {
+									data.windows.window('hide');
+								} else {
+									data.windows.window('show');
+									if (!isForeground) {
+										data.windows.window('toForeground');
 									}
 								}
 							});
-
-							if (isShown) {
-								data.windows.window('hide');
-							} else {
-								data.windows.window('show');
-								if (!isForeground) {
-									data.windows.window('toForeground');
-								}
-							}
-						});
-					} else {
-						$item.click(function() {
-							W.Cmd.execute(data.app.get('command'));
-						});
-					}
+						} else {
+							$item.click(function() {
+								W.Cmd.execute(data.app.get('command'));
+							});
+						}
+					})($item);
 
 					$('<img />', {
 						src: data.icon.realpath(48),
@@ -228,15 +271,26 @@ Webos.require([
 						for (var i = 0; i < data.windows.length; i++) {
 							indicators += '<span class="window-indicator"></span>';
 						}
-						indicators += '</span</div>';
+						indicators += '</span></div>';
 						$item.append(indicators);
+
+						var badgeVal = $(data.windows).window('option', 'badge');
+						var badge = '<div class="app-badge">';
+						if (badgeVal) {
+							badge += badgeVal;
+						}
+						badge += '</div>';
+						$item.append(badge);
+
+						var progressBar = '<div class="app-progressbar"><div class="progressbar-inner" style="width:30%;"></div></div>';
+						$item.append(progressBar);
 					}
 
 					$item.append('<div class="app-title"><span class="app-title-inner">'+data.title+'</span></div>');
 
 					//Context menu
 					if (data.app) {
-						var contextmenu = $.w.contextMenu($item);
+						/*var contextmenu = $.w.contextMenu($item);
 						$.webos.menuItem(t.get('New window')).click(function() {
 							W.Cmd.execute(data.app.get('command'));
 						}).appendTo(contextmenu);
@@ -248,7 +302,7 @@ Webos.require([
 							$.webos.menuItem(t.get('Add to favorites'), true).click(function() {
 								that.addFavorite(data.app);
 							}).appendTo(contextmenu);
-						}
+						}*/
 					}
 
 					return $item;
@@ -259,7 +313,9 @@ Webos.require([
 					(function(i, app) {
 						//On detecte les fenetres correspondant au favori
 						var appWindows = $();
-						if (that._cmds2Windows[app.get('command')]) {
+						if (that._fullCmds2Windows[app.get('command')]) {
+							appWindows = that._fullCmds2Windows[app.get('command')];
+						} else if (that._cmds2Windows[app.get('command')]) {
 							appWindows = that._cmds2Windows[app.get('command')];
 						}
 
@@ -293,8 +349,8 @@ Webos.require([
 
 						//Detect apps corresponding to this window
 						var windowApp;
-						for (var appCmd in that._cmds2Windows) {
-							that._cmds2Windows[appCmd].each(function () {
+						for (var appCmd in that._fullCmds2Windows) {
+							that._fullCmds2Windows[appCmd].each(function () {
 								if (thisWindow.window('id') === $(this).window('id')) {
 									windowApp = appCmd;
 									return false;
@@ -303,6 +359,20 @@ Webos.require([
 
 							if (windowApp) {
 								break;
+							}
+						}
+						if (!windowApp) {
+							for (var appCmd in that._cmds2Windows) {
+								that._cmds2Windows[appCmd].each(function () {
+									if (thisWindow.window('id') === $(this).window('id')) {
+										windowApp = appCmd;
+										return false;
+									}
+								});
+
+								if (windowApp) {
+									break;
+								}
 							}
 						}
 
@@ -352,12 +422,12 @@ Webos.require([
 		addFavorite: function (app) {
 			var that = this, t = this.translations();
 			
-			Webos.Application.listFavorites(function(favorites) {
+			Webos.Application.listFavorites(function (favorites) {
 				app.set('favorite', favorites.length + 1);
-				app.sync([function() {
+				app.syncIfAllowed([function () {
 					that.renderLauncher();
-				}, function(response) {
-					response.triggerError(t.get('Cannot add "${app}" to favorites', { 'app': app.get('title') }));
+				}, function (res) {
+					res.triggerError(t.get('Cannot add "${app}" to favorites', { 'app': app.get('title') }));
 				}]);
 			});
 		},
@@ -365,12 +435,45 @@ Webos.require([
 			var that = this, t = this.translations();
 			
 			app.set('favorite', 0);
-			app.sync([function() {
+			app.syncIfAllowed([function () {
 				that.renderLauncher();
-			}, function(response) {
-				response.triggerError(t.get('Cannot remove "${app}" from favorites', { 'app': app.get('title') }));
+			}, function (res) {
+				res.triggerError(t.get('Cannot remove "${app}" to favorites', { 'app': app.get('title') }));
 			}]);
 		},
+		initLauncher: function () {
+			var that = this, t = this.translations();
+
+			// Add context menu
+			var contextmenu = $.w.contextMenu(that._$launcherApps, 'li');
+			
+			var app = null;
+			var menuItems = {
+				open: $.webos.menuItem(t.get('New window')).click(function () {
+					W.Cmd.execute(app.get('command'));
+				}).appendTo(contextmenu),
+				addFavorite: $.webos.menuItem(t.get('Add to favorites'), true).click(function () {
+					that.addFavorite(app);
+				}).appendTo(contextmenu),
+				removeFavorite: $.webos.menuItem(t.get('Remove from favorites'), true).click(function () {
+					that.removeFavorite(app);
+				}).appendTo(contextmenu)
+			};
+			contextmenu.on('contextmenubeforeopen', function (e, data) {
+				var $item = $(data.target);
+				app = $item.data('app');
+
+				if (!app) {
+					return false;
+				}
+
+				menuItems.addFavorite.toggle(app.get('favorite') === false);
+				menuItems.removeFavorite.toggle(app.get('favorite') !== false);
+			});
+
+			this.renderLauncher();
+		},
+
 		_displayApps: function (list) {
 			var that = this, t = this.translations();
 
@@ -386,10 +489,10 @@ Webos.require([
 					return;
 				}
 
-				var item = $('<li></li>', { title: app.get('description') }).draggable({
+				var item = $('<li></li>', { title: app.get('description'), 'class': 'app' }).draggable({
 					data: app,
 					dragImage: $('<img />', { src: new W.Icon(app.get('icon'), 48) }).css({ height: '48px', width: '48px' })
-				});
+				}).data('app', app);
 
 				item.click(function() {
 					that.closeApps();
@@ -406,17 +509,6 @@ Webos.require([
 				$('<div></div>', { 'class': 'app-description' })
 					.html(app.get('description'))
 					.appendTo(item);
-
-				var contextmenu = $.w.contextMenu(item);
-				if (app.get('favorite') !== false) {
-					$.webos.menuItem(t.get('Remove from favorites'), true).click(function() {
-						that.removeFavorite(app);
-					}).appendTo(contextmenu);
-				} else {
-					$.webos.menuItem(t.get('Add to favorites'), true).click(function() {
-						that.addFavorite(app);
-					}).appendTo(contextmenu);
-				}
 
 				if (app.get('category')) {
 					if (categoryName === null) {
@@ -597,7 +689,7 @@ Webos.require([
 			}
 		},
 		initApps: function () {
-			var that = this;
+			var that = this, t = this.translations();
 			var $appsBtn = this._$appsBtn;
 
 			$appsBtn.click(function (e) {
@@ -620,11 +712,38 @@ Webos.require([
 			}).keyup(function (e) {
 				if (e.keyCode == 27) {
 					$(this).val('');
-					that.switchAppsView('grid');
-				} else if ($(this).val().length) {
-					that.switchAppsView('search');
-					that.renderAppsSearch($(this).val());
 				}
+
+				var val = $(this).val();
+				if (val.length) {
+					that.switchAppsView('search');
+					that.renderAppsSearch(val);
+				} else {
+					that.switchAppsView('grid');
+				}
+			});
+
+			// Add context menu
+			var contextmenu = $.w.contextMenu(this._$apps, 'li.app');
+
+			var app = null;
+			var menuItems = {
+				open: $.webos.menuItem(t.get('New window')).click(function () {
+					W.Cmd.execute(app.get('command'));
+				}).appendTo(contextmenu),
+				addFavorite: $.webos.menuItem(t.get('Add to favorites'), true).click(function () {
+					that.addFavorite(app);
+				}).appendTo(contextmenu),
+				removeFavorite: $.webos.menuItem(t.get('Remove from favorites'), true).click(function () {
+					that.removeFavorite(app);
+				}).appendTo(contextmenu)
+			};
+			contextmenu.on('contextmenubeforeopen', function (e, data) {
+				var $item = $(data.target);
+				app = $item.data('app');
+
+				menuItems.addFavorite.toggle(app.get('favorite') === false);
+				menuItems.removeFavorite.toggle(app.get('favorite') !== false);
 			});
 
 			this.renderApps();
@@ -675,32 +794,35 @@ Webos.require([
 					W.Cmd.execute('gconf');
 				}).appendTo($submenu);
 			} else {
-				$('<li>'+t.get('Login...')+'</li>').click(function() {
-					W.Cmd.execute('gnome-login');
-				}).appendTo($submenu);
-				var registerMenuItem = $('<li>'+t.get('Register')+'</li>').click(function() {
-					W.Cmd.execute('gnome-register');
-				}).hide().appendTo($submenu);
-				$('<li></li>', { 'class': 'separator' }).appendTo($submenu);
-				
-				Webos.User.canRegister(function(registerSettings) {
-					var notificationsButtons = [
-						$.w.button(t.get('Register')).click(function() { W.Cmd.execute('gnome-register'); }),
-						$.w.button(t.get('Login...')).click(function() { W.Cmd.execute('gnome-login'); })
-					];
-					if (registerSettings.register) {
-						registerMenuItem.show();
-					} else {
-						notificationsButtons = [notificationsButtons[1]];
-					}
+				if (!Webos.standalone) {
+					$('<li>'+t.get('Login...')+'</li>').click(function() {
+						W.Cmd.execute('gnome-login');
+					}).appendTo($submenu);
+
+					var registerMenuItem = $('<li>'+t.get('Register')+'</li>').click(function() {
+						W.Cmd.execute('gnome-register');
+					}).hide().appendTo($submenu);
+					$('<li></li>', { 'class': 'separator' }).appendTo($submenu);
 					
-					/*$.w.notification({
-						title: t.get('Welcome to ${webos} !', { webos: Webos.name }),
-						message: t.get('To access your documents please login.'),
-						icon: '/usr/share/images/distributor/logo-48.png',
-						widgets: notificationsButtons
-					});*/
-				});
+					Webos.User.canRegister(function(registerSettings) {
+						var notificationsButtons = [
+							$.w.button(t.get('Register')).click(function() { W.Cmd.execute('gnome-register'); }),
+							$.w.button(t.get('Login...')).click(function() { W.Cmd.execute('gnome-login'); })
+						];
+						if (registerSettings.register) {
+							registerMenuItem.show();
+						} else {
+							notificationsButtons = [notificationsButtons[1]];
+						}
+						
+						/*$.w.notification({
+							title: t.get('Welcome to ${webos} !', { webos: Webos.name }),
+							message: t.get('To access your documents please login.'),
+							icon: '/usr/share/images/distributor/logo-48.png',
+							widgets: notificationsButtons
+						});*/
+					});
+				}
 			}
 
 			if (Webos.fullscreen.support) {
@@ -722,12 +844,13 @@ Webos.require([
 					}
 					updateFullScreenItemFn();
 				}).appendTo($submenu);
+
 				$('<li></li>', { 'class': 'separator' }).appendTo($submenu);
-				
+
 				$(document).bind(Webos.fullscreen.eventName, function() {
 					updateFullScreenItemFn();
 				});
-				
+
 				updateFullScreenItemFn();
 			}
 
@@ -768,7 +891,7 @@ Webos.require([
 		destroyMeMenu: function () {
 			Webos.User.off('login.memenu.elementary logout.memenu.elementary');
 		},
-		init: function () {
+		_init: function () {
 			var that = this;
 
 			this.initWindowsEvents();
@@ -777,9 +900,21 @@ Webos.require([
 			Webos.Translation.load(function(t) {
 				that._translations = t;
 
-				that.renderLauncher();
-				that.initApps();
 				that.initMeMenu();
+			}, 'elementary');
+
+			Webos.UserInterface.Booter.once('switch', function () {
+				that.destroy();
+			});
+		},
+		init: function () {
+			var that = this;
+
+			Webos.Translation.load(function(t) {
+				that._translations = t;
+
+				that.initApps();
+				that.initLauncher();
 
 				Webos.Theme.on('load.elementary', function() {
 					that.renderLauncher();
@@ -793,10 +928,6 @@ Webos.require([
 
 				that.trigger('ready');
 			}, 'elementary');
-
-			Webos.UserInterface.Booter.once('switch', function () {
-				that.destroy();
-			});
 		},
 		destroy: function () {
 			this.destroyWindowsEvents();
@@ -812,5 +943,5 @@ Webos.require([
 
 	Webos.Observable.build(Elementary);
 
-	Elementary.init();
+	Elementary._init();
 });

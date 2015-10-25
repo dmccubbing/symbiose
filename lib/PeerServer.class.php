@@ -5,9 +5,10 @@ use lib\entities\OnlinePeer;
 use Ratchet\MessageComponentInterface;
 use Ratchet\ConnectionInterface;
 use React\EventLoop\Factory as EventLoopFactory;
-use \WebSocketClient;
+use Evenement\EventEmitter;
+use WebSocketClient;
 
-class PeerServer implements MessageComponentInterface {
+class PeerServer extends EventEmitter implements MessageComponentInterface {
 	/*protected $config = array(
 		'defaultApplicationName' => 'default',
 		'externalIceServers' => array(
@@ -54,7 +55,7 @@ class PeerServer implements MessageComponentInterface {
 		$this->clients->attach($conn);
 
 		echo "New connection! ({$conn->resourceId})\n";
-		
+
 		$params = $conn->WebSocket->request->getQuery()->getAll();
 		$peerId = (isset($params['id'])) ? urldecode($params['id']) : null;
 		$key = (isset($params['key'])) ? urldecode($params['key']) : null;
@@ -111,7 +112,8 @@ class PeerServer implements MessageComponentInterface {
 	protected function _sendMsgToClient(ConnectionInterface $from, $dst, $msg) {
 		$msgSent = false;
 
-		$src = $this->getPeerByConnId($from->resourceId)['id'];
+		$srcData = $this->getPeerByConnId($from->resourceId);
+		$src = $srcData['id'];
 
 		try {
 			foreach($this->clients as $conn) {
@@ -149,7 +151,8 @@ class PeerServer implements MessageComponentInterface {
 	}
 
 	protected function _sendMsgToServer(ConnectionInterface $from, $dst, $msgData) {
-		$srcId = $this->getPeerByConnId($from->resourceId)['id'];
+		$srcData = $this->getPeerByConnId($from->resourceId);
+		$srcId = $srcData['id'];
 		$src = $srcId.'@'.$this->hostname().':'.$this->port().'/peerjs';
 
 		$dstData = parse_url($dst);
@@ -198,8 +201,8 @@ class PeerServer implements MessageComponentInterface {
 	}
 
 	protected function _handleTransmission(ConnectionInterface $from, $msgData) {
-		$msgData['src'] = $this->getPeerByConnId($from->resourceId)['id'];
-
+		$srcData = $this->getPeerByConnId($from->resourceId);
+		$msgData['src'] = $srcData['id'];
 		$type = $msgData['type'];
 		$src = $msgData['src'];
 		$dst = (isset($msgData['dst'])) ? $msgData['dst'] : null;
@@ -208,6 +211,7 @@ class PeerServer implements MessageComponentInterface {
 
 		if (!in_array($type, array('LEAVE', 'CANDIDATE', 'OFFER', 'ANSWER'))) {
 			echo 'Error: Unknown message type "'.$type.'"';
+			var_dump($msgData);
 			return;
 		}
 
@@ -316,12 +320,21 @@ class PeerServer implements MessageComponentInterface {
 	}
 
 	public function insertPeer($peer) {
+		$this->emit('peer.inserted', array($peer));
+
+		return $this->updatePeer($peer);
+	}
+
+	public function updatePeer($peer) {
+		$this->emit('peer.updated', array($peer));
+
 		$this->peers[$peer['connectionId']] = $peer;
 	}
 
 	public function deletePeer($id) {
 		foreach ($this->peers as $i => $peer) {
 			if ($peer['id'] == $id) {
+				$this->emit('peer.deleted', array($this->peers[$i]));
 				unset($this->peers[$i]);
 				return;
 			}

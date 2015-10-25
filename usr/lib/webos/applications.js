@@ -1,25 +1,54 @@
-if (Webos.Application) {
-	return;
-}
+(function () {
 
+/**
+ * An application.
+ * @constructor
+ * @augments Webos.Model
+ * @author emersion
+ */
 Webos.Application = function (data, name) {
 	this._name = name;
 	Webos.Model.call(this, data);
 };
 
+/**
+ * App's prototype.
+ */
 Webos.Application.prototype = {
+	/**
+	 * Get this app's name.
+	 * @return {String}
+	 */
 	name: function() {
 		return this._name;
 	},
+	/**
+	 * Get file extensions this app can open.
+	 * @return {Array}
+	 * @deprecated Use openExtensions() instead.
+	 */
 	open: function() {
 		return (this.exists('open') && this._get('open')) ? this._get('open').split(',') : [];
 	},
+	/**
+	 * Get file extensions this app can open.
+	 * @return {Array}
+	 */
 	openExtensions: function() {
 		return this.get('open');
 	},
+	/**
+	 * Get file mime types this app can open.
+	 * @return {Array}
+	 */
 	openMimeTypes: function() {
 		return (this.exists('openMimeTypes') && this._get('openMimeTypes')) ? this._get('openMimeTypes').split(',') : [];
 	},
+	/**
+	 * Check if this app is able to open a given file.
+	 * @param {Webos.File} The file.
+	 * @return {Boolean} True if this app opens the file, false otherwise.
+	 */
 	opensFile: function(file) {
 		file = Webos.File.get(file);
 
@@ -27,31 +56,36 @@ Webos.Application.prototype = {
 			return true;
 		}
 
-		var found = false, openMimeTypes = this.get('openMimeTypes'), fileMimeType = file.get('mime_type');
+		var found = false, openMimeTypes = this.get('openMimeTypes');
 		for(var i = 0; i < openMimeTypes.length; i++) {
 			var mimeType = openMimeTypes[i];
 
-			if (mimeType.indexOf('*') !== -1) {
-				mimeType = mimeType.replace(/[-\/\\^$+?.()|[\]{}]/g, '\\$&').replace('*', '(.+)');
-				found = ((new RegExp(mimeType, 'i')).test(fileMimeType));
-			} else {
-				found = (fileMimeType == mimeType);
-			}
-
-			if (found) {
+			if (file.matchesMimeType(mimeType)) {
 				return true;
 			}
 		}
 
 		return false;
 	},
+	/**
+	 * Get prefered file extensions this app can open.
+	 * @return {Array}
+	 */
 	preferedOpen: function() {
 		return (this.exists('prefered_open') && this._get('prefered_open')) ? this._get('prefered_open').split(',') : [];
 	},
+	/**
+	 * Set prefered file extensions this app can open.
+	 * @param {Array} exts File extensions.
+	 */
 	setPreferedOpen: function(exts) {
 		this._set('prefered_open', String(exts));
 		return true;
 	},
+	/**
+	 * Add a prefered file extension this app can open.
+	 * @param {Array} ext The file extension.
+	 */
 	addPreferedOpen: function(ext) {
 		ext = String(ext);
 
@@ -65,9 +99,17 @@ Webos.Application.prototype = {
 		}
 		return true;
 	},
+	/**
+	 * Get this app's types.
+	 * @return {Array}
+	 */
 	type: function() {
 		return (this.exists('type')) ? this._get('type').split(',') : [];
 	},
+	/**
+	 * Check if this app has been marked as favorite.
+	 * @return {Number} 1 if this app is favorite, 0 otherwise.
+	 */
 	favorite: function() {
 		var favorite = this._get('favorite');
 		if (typeof favorite == 'undefined' || parseInt(favorite) == 0) {
@@ -75,44 +117,42 @@ Webos.Application.prototype = {
 		}
 		return parseInt(favorite);
 	},
+	/**
+	 * Set/unset this app as favorite.
+	 * @param {Number} value 1 if this app is favorite, 0 otherwise.
+	 */
 	setFavorite: function(value) {
 		this._set('favorite', (!isNaN(parseInt(value))) ? parseInt(value) : 0);
 	},
 	sync: function(callback) {
 		callback = Webos.Callback.toCallback(callback);
-		
 		var that = this;
-		
-		var data = {};
-		var nbrChanges = 0;
-		for (var key in this._unsynced) {
-			if (this._unsynced[key].state === 1) {
-				this._unsynced[key].state = 2;
-				data[key] = this._unsynced[key].value;
-				nbrChanges++;
-			}
-		}
-		
-		if (nbrChanges === 0) {
+
+		var changed = this._stageChanges();
+		if (!changed.length) {
 			callback.success(this);
 			return;
 		}
-		
-		if (typeof data.favorite != 'undefined') {
-			if (data.favorite) {
+
+		if (~changed.indexOf('favorite')) {
+			var favorite = this.getChanged('favorite');
+			var callbacks = [function () {
+				that._propagateChanges(['favorite']);
+				callback.success();
+			}, function (res) {
+				that._unstageChanges(['favorite']);
+				callback.error(res);
+			}];
+			console.log(favorite);
+			if (favorite) {
 				new Webos.ServerCall({
 					'class': 'ApplicationShortcutController',
 					method: 'setFavorite',
 					arguments: {
 						name: this.get('name'),
-						position: data.favorite
+						position: favorite
 					}
-				}).load(new Webos.Callback(function() {
-					that._data['favorite'] = that._unsynced['favorite'].value;
-					delete that._unsynced['favorite'];
-					that.notify('update', { key: 'favorite', value: that._data[key].value });
-					callback.success();
-				}, callback.error));
+				}).load(callbacks);
 			} else {
 				new Webos.ServerCall({
 					'class': 'ApplicationShortcutController',
@@ -120,25 +160,20 @@ Webos.Application.prototype = {
 					arguments: {
 						name: this.get('name')
 					}
-				}).load(new Webos.Callback(function() {
-					that._data['favorite'] = that._unsynced['favorite'].value;
-					delete that._unsynced['favorite'];
-					that.notify('update', { key: 'favorite', value: that._data['favorite'].value });
-					callback.success();
-				}, callback.error));
+				}).load(callbacks);
 			}
-		}
-
-		if (typeof data.prefered_open != 'undefined') {
-			Webos.ConfigFile.loadUserConfig('~/.config/prefered-openers.xml', null, [function(config) {
-				config.set(that.get('name'), data.prefered_open);
-				config.sync([function() {
-					that._data['prefered_open'] = that._unsynced['prefered_open'].value;
-					delete that._unsynced['prefered_open'];
-					that.notify('update', { key: 'prefered_open', value: that._data['prefered_open'].value });
+		} else {
+			var onerror = function (res) {
+				that._unstageChanges(changed);
+				callback.error(res);
+			};
+			Webos.ConfigFile.loadUserConfig('~/.config/prefered-openers.xml', null, [function (config) {
+				config.set(that.get('name'), that.getChanged('prefered_open'));
+				config.sync([function () {
+					that._propagateChanges(changed);
 					callback.success();
-				}, callback.error]);
-			}, callback.error]);
+				}, onerror]);
+			}, onerror]);
 		}
 	}
 };
@@ -147,10 +182,26 @@ Webos.inherit(Webos.Application, Webos.Model);
 
 Webos.Observable.build(Webos.Application);
 
+/**
+ * True if apps list has been loaded.
+ * @private
+ */
 Webos.Application._loaded = false;
+/**
+ * Apps list.
+ * @private
+ */
 Webos.Application._applications = {};
+/**
+ * Categories list.
+ * @private
+ */
 Webos.Application._categories = {};
 
+/**
+ * List all available apps.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.list = function(callback) {
 	callback = Webos.Callback.toCallback(callback);
 	
@@ -182,6 +233,11 @@ Webos.Application.list = function(callback) {
 		callback.success(Webos.Application._applications);
 	}, callback.error]);
 };
+/**
+ * Get a specific app.
+ * @param {String} name The app name.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.get = function(name, callback) {
 	name = String(name);
 	callback = Webos.Callback.toCallback(callback);
@@ -196,6 +252,12 @@ Webos.Application.get = function(name, callback) {
 		return app;
 	}
 };
+/**
+ * List apps by category.
+ * @param {String} cat The category name.
+ * @param {Webos.Callback} callback The callback.
+ * @param {Object} [apps] If specified, the function will filter provided apps.
+ */
 Webos.Application.listByCategory = function(cat, callback, apps) {
 	callback = Webos.Callback.toCallback(callback);
 	
@@ -224,6 +286,12 @@ Webos.Application.listByCategory = function(cat, callback, apps) {
 		filterFn(apps);
 	}
 };
+/**
+ * List apps by search query.
+ * @param {String} search The search query.
+ * @param {Webos.Callback} callback The callback.
+ * @param {Object} [apps] If specified, the function will filter provided apps.
+ */
 Webos.Application.listBySearch = function(search, callback, apps) {
 	search = $.trim(search);
 	callback = W.Callback.toCallback(callback);
@@ -260,6 +328,11 @@ Webos.Application.listBySearch = function(search, callback, apps) {
 		filterFn(apps);
 	}
 };
+/**
+ * List favorite apps.
+ * @param {Webos.Callback} callback The callback.
+ * @param {Object} [apps] If specified, the function will filter provided apps.
+ */
 Webos.Application.listFavorites = function(callback, apps) {
 	callback = W.Callback.toCallback(callback);
 	
@@ -289,7 +362,11 @@ Webos.Application.listFavorites = function(callback, apps) {
 		filterFn(apps);
 	}
 };
-
+/**
+ * List apps which can open a specified file.
+ * @param {Webos.File} file The file.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.listOpeners = function(file, callback) {
 	callback = W.Callback.toCallback(callback);
 
@@ -311,7 +388,45 @@ Webos.Application.listOpeners = function(file, callback) {
 		filterFn(apps);
 	}, callback.error]);
 };
+/**
+ * Open a file.
+ * @param  {Webos.File}      file     The file to open.
+ * @param  {Webos.Callback}  callback The callback.
+ * @return {Webos.Operation}          The operation.
+ */
+Webos.Application.openFile = function (file, callback) {
+	var op = Webos.Operation.create();
+	op.addCallbacks(callback);
 
+	Webos.Application.listOpeners(file, function(openers) {
+		if (openers.length > 0) {
+			var prefered = openers[0];
+
+			for (var i = 0; i < openers.length; i++) {
+				if ($.inArray(file.get('extension'), openers[i].get('preferedOpen')) != -1) {
+					prefered = openers[i];
+					break;
+				}
+			}
+
+			W.Cmd.execute({
+				executable: prefered.get('command'),
+				args: [file]
+			});
+
+			op.setCompleted();
+		} else {
+			op.setCompleted(W.Callback.Result.error('No app found to open "'+file.get('basename')+'"'));
+		}
+	});
+
+	return op;
+};
+/**
+ * List apps by type.
+ * @param {String} type The type.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.listByType = function(type, callback) {
 	type = String(type);
 	callback = W.Callback.toCallback(callback);
@@ -327,7 +442,10 @@ Webos.Application.listByType = function(type, callback) {
 		callback.success(list);
 	}, callback.error]);
 };
-
+/**
+ * List apps categories.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.categories = function(callback) {
 	callback = Webos.Callback.toCallback(callback);
 	
@@ -335,6 +453,11 @@ Webos.Application.categories = function(callback) {
 		callback.success(Webos.Application._categories);
 	}, callback.error]);
 };
+/**
+ * Get a specific category.
+ * @param {String} name The category.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.category = function(name, callback) {
 	name = String(name);
 	callback = Webos.Callback.toCallback(callback);
@@ -343,7 +466,11 @@ Webos.Application.category = function(name, callback) {
 		callback.success(Webos.Application._categories[name]);
 	}, callback.error]);
 };
-
+/**
+ * Get the prefered app for a specified type.
+ * @param {String} name The type.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.getPrefered = function(type, callback) {
 	type = String(type);
 	callback = Webos.Callback.toCallback(callback);
@@ -358,6 +485,12 @@ Webos.Application.getPrefered = function(type, callback) {
 		}, callback.error]);
 	}, callback.error]);
 };
+/**
+ * Set the prefered app for a specified type.
+ * @param {Webos.Application|String} app The app or the app command.
+ * @param {String} type The type.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.setPrefered = function(app, type, callback) {
 	if (Webos.isInstanceOf(app, Webos.Application)) {
 		app = app.get('command');
@@ -374,7 +507,11 @@ Webos.Application.setPrefered = function(app, type, callback) {
 		}, callback.error]);
 	}, callback.error]);
 };
-
+/**
+ * List apps by type.
+ * @param {String} type The type.
+ * @param {Webos.Callback} callback The callback.
+ */
 Webos.Application.getByType = function(type, callback) {
 	type = String(type);
 	callback = W.Callback.toCallback(callback);
@@ -390,6 +527,9 @@ Webos.Application.getByType = function(type, callback) {
 	}, callback.error]);
 };
 
+/**
+ * Clear the app cache.
+ */
 Webos.Application.clearCache = function() {
 	Webos.Application._loaded = false;
 	Webos.Application._applications = {};
@@ -397,3 +537,5 @@ Webos.Application.clearCache = function() {
 
 	Webos.Application.trigger('reload');
 };
+
+})();

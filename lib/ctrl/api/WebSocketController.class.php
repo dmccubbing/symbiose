@@ -8,11 +8,11 @@ use \RuntimeException;
  * @author $imon
  */
 class WebSocketController extends \lib\ApiBackController {
-	const SERVER_PID_FILE = '/etc/websocket-server-pid';
+	const SERVER_PID_FILE = '/var/run/websocket-server.pid';
 	const SERVER_CONFIG_FILE = '/etc/websocket-server.json';
 	const SERVER_LOG_FILE = '/var/log/websocket-server.log';
 
-	protected $serverScript = '/sbin/wsserver.php';
+	protected $serverScript = '/sbin/server.php';
 
 	protected function _getServerConfig() {
 		$configManager = $this->managers()->getManagerOf('config');
@@ -42,8 +42,12 @@ class WebSocketController extends \lib\ApiBackController {
 			return false;
 		}
 
-		$pid = (int) trim($fileManager->read($pidFile));
-		$result = shell_exec('ps --no-headers -p '.$pid);
+		$pid = trim($fileManager->read($pidFile));
+		if (empty($pid)) {
+			return false;
+		}
+
+		$result = shell_exec('ps --no-headers -p '.(int) $pid);
 
 		if (empty($result)) {
 			return false;
@@ -85,6 +89,10 @@ class WebSocketController extends \lib\ApiBackController {
 
 		$cmd = 'php "'.$webosRoot.'/'.$this->serverScript.'"';
 		$pidFile = self::SERVER_PID_FILE;
+		$pidFileDir = $fileManager->dirname($pidFile);
+		if (!$fileManager->isDir($pidFileDir)) {
+			$fileManager->mkdir($pidFileDir, true);
+		}
 
 		$pid = shell_exec('nohup '.$cmd.' > "'.$webosRoot.'/'.self::SERVER_LOG_FILE.'" 2>&1 & echo $!');
 		chmod($webosRoot.'/'.self::SERVER_LOG_FILE, 0777);
@@ -116,7 +124,7 @@ class WebSocketController extends \lib\ApiBackController {
 			throw new RuntimeException('Cannot stop server: '.$result);
 		}
 
-		$fileManager->delete($pidFile);
+		$fileManager->write($pidFile, '');
 	}
 
 	public function executeRestartServer() {
@@ -136,10 +144,10 @@ class WebSocketController extends \lib\ApiBackController {
 		$serverStatus = array(
 			'started' => $this->_isServerStarted(),
 			'supported' => $this->_isSupported(),
-			'port' => $config['port'],
+			'port' => (isset($config['port'])) ? $config['port'] : null,
 			'enabled' => (isset($config['enabled'])) ? $config['enabled'] : false,
 			'autoStart' => (isset($config['autoStart'])) ? $config['autoStart'] : false,
-			'protocol' => (isset($config['protocol'])) ? $config['protocol'] : 'ws',
+			'protocol' => (isset($config['protocol'])) ? $config['protocol'] : null,
 		);
 
 		if (!$this->_isSupported()) {

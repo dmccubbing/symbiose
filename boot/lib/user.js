@@ -6,8 +6,8 @@
  * @augments {Webos.Model}
  * @since 1.0alpha1
  */
-Webos.User = function WUser(id, data) {
-	this._id = parseInt(id);
+Webos.User = function (id, data) {
+	this._id = parseInt(id, 10);
 	Webos.Model.call(this, data);
 };
 Webos.User.prototype = {
@@ -80,6 +80,69 @@ Webos.User.prototype = {
 	 */
 	authorizations: function (callback) {
 		return this.getAuthorizations(callback);
+	},
+	/**
+	 * Get this user's profile picture.
+	 * @param  {Webos.Callback} callback
+	 * @return {Webos.Operation}
+	 */
+	getAvatar: function (callback) {
+		var op = Webos.Operation.create().addCallbacks(callback);
+
+		if (typeof this._avatar != 'undefined') {
+			op.setCompleted(this._avatar);
+			return op;
+		}
+
+		var that = this;
+
+		new Webos.ServerCall({
+			'class': 'UserController',
+			'method': 'getAvatar',
+			'arguments': {
+				'user': this.id()
+			}
+		}).load([function(resp) {
+			var data = resp.getData(),
+				avatar = data.avatar;
+			
+			that._avatar = avatar;
+
+			op.setCompleted(avatar);
+		}, function (resp) {
+			op.setCompleted(resp);
+		}]);
+
+		return op;
+	},
+	/**
+	 * Set this user's profile picture.
+	 * @param {String} imgUri The profile picture URI.
+	 * @param  {Webos.Callback} callback
+	 * @return {Webos.Operation}
+	 */
+	setAvatar: function (imgUri, callback) {
+		var op = Webos.Operation.create().addCallbacks(callback);
+
+		var that = this;
+
+		new Webos.ServerCall({
+			'class': 'UserController',
+			'method': 'setAvatar',
+			'arguments': {
+				'imgUri': imgUri,
+				'user': this.id()
+			}
+		}).load([function(resp) {
+			that._avatar = imgUri;
+
+			op.setCompleted();
+			that.notify('update', { avatar: imgUri });
+		}, function (resp) {
+			op.setCompleted(resp);
+		}]);
+
+		return op;
 	},
 	/**
 	 * Set this user's real name.
@@ -194,8 +257,6 @@ Webos.User.prototype = {
 			if (that.isLogged()) {
 				Webos.User.logout(callback);
 			}
-
-			delete that;
 		}, function(response) {
 			callback.error(response);
 		}));
@@ -272,18 +333,18 @@ Webos.User.get = function(callback, userId) {
 	
 	if (typeof userId == 'undefined') {
 		if (typeof Webos.User.logged != 'number' || !Webos.User.cache[Webos.User.logged]) {
-			Webos.User.getLogged([function(user) {
+			return Webos.User.getLogged([function(user) {
 				callback.success(user);
 			}, callback.error]);
 		} else {
 			callback.success(Webos.User.cache[Webos.User.logged]);
+			return Webos.Operation.createCompleted(Webos.User.cache[Webos.User.logged]);
 		}
-		return;
 	}
 
 	if (typeof Webos.User.cache[userId] != 'undefined') {
 		callback.success(Webos.User.cache[userId]);
-		return;
+		return Webos.Operation.createCompleted();
 	}
 
 	return new Webos.ServerCall({
@@ -292,14 +353,14 @@ Webos.User.get = function(callback, userId) {
 		'arguments': {
 			'userId': userId
 		}
-	}).load(new Webos.Callback(function(response) {
+	}).load([function(response) {
 		var data = response.getData();
 		var user = new Webos.User(data.id, data);
 		Webos.User.cache[user.id()] = user;
 		callback.success(user);
 	}, function(response) {
 		callback.error(response);
-	}));
+	}]);
 };
 
 /**
@@ -311,14 +372,14 @@ Webos.User.getLogged = function(callback) {
 	
 	if (typeof Webos.User.logged == 'number' && Webos.User.cache[Webos.User.logged]) {
 		callback.success(Webos.User.cache[Webos.User.logged]);
-		return;
+		return Webos.Operation.createCompleted(Webos.User.cache[Webos.User.logged]);
 	}
 	
 	if (Webos.User.logged === false) {
 		callback.success();
-		return;
+		return Webos.Operation.createCompleted();
 	}
-	
+
 	return new Webos.ServerCall({
 		'class': 'UserController',
 		'method': 'getLogged'
@@ -348,7 +409,7 @@ Webos.User.getByUsername = function(username, callback) {
 	for (var id in Webos.User.cache) {
 		if (Webos.User.cache[id].get('username') === username) {
 			callback.success(Webos.User.cache[id]);
-			return;
+			return Webos.Operation.createCompleted(Webos.User.cache[id]);
 		}
 	}
 
@@ -437,7 +498,7 @@ Webos.User._pingInterval = 6 * 60 * 1000;
 Webos.User._startPingTimer = function () {
 	if (Webos.User._pingTimer === null) {
 		Webos.User._pingTimer = setInterval(function() {
-			if (!typeof Webos.User.logged != 'number') {
+			if (typeof Webos.User.logged != 'number') {
 				Webos.User._stopPingTimer();
 				return;
 			}

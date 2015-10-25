@@ -11,7 +11,15 @@ class HTTPResponse {
 	 * The response's content.
 	 * @var ResponseContent
 	 */
-	protected $content;
+	protected $content = '';
+
+	/**
+	 * The response's length.
+	 * @var int
+	 */
+	protected $length = 0;
+
+	protected $outputCallback;
 
 	/**
 	 * Add a HTTP header.
@@ -54,7 +62,8 @@ class HTTPResponse {
 	 * Send the response.
 	 */
 	public function send() {
-		exit($this->content->generate());
+		$this->output($this->content->generate());
+		exit();
 	}
 
 	/**
@@ -71,6 +80,19 @@ class HTTPResponse {
 	 */
 	public function setContent(ResponseContent $content) {
 		$this->content = $content;
+
+		if ($content instanceof RawResponse) {
+			$content->emitter()->on('output', array($this, 'output'));
+		}
+	}
+
+	/**
+	 * Output some content.
+	 * @param  string $out The output.
+	 */
+	public function output($out) {
+		$this->length += strlen($out);
+		echo $out;
 	}
 
 	// Changes compared to the setcookie() function : the last argument is true by default
@@ -129,5 +151,13 @@ class HTTPResponse {
 		$this->addHeader('Cache-Control: max-age='.$cacheOffset);
 		$this->addHeader('Expires: '.gmdate('D, d M Y H:i:s T', time()+$cacheOffset));
 		$this->removeHeader('Pragma'); //Non-standard
+	}
+
+	/**
+	 * Get the response length.
+	 * @return int The response length, in bytes.
+	 */
+	public function length() {
+		return $this->length;
 	}
 }

@@ -3,6 +3,7 @@ namespace lib\ctrl\api;
 
 use \lib\ApiBackController;
 use \lib\PeerServer;
+use \lib\ApiWebSocketServer;
 use \lib\entities\OnlinePeer;
 use \lib\entities\OfflinePeer;
 use \lib\entities\PeerLink;
@@ -13,15 +14,33 @@ use \RuntimeException;
  * @author $imon
  */
 class PeerController extends ApiBackController {
+	const CONFIG_FILE = '/etc/peers.json';
+
 	protected static $peerServer;
+	protected static $apiServer;
+
+	protected function _getConfig() {
+		$configManager = $this->managers()->getManagerOf('config');
+		$configFile = $configManager->open(self::CONFIG_FILE);
+
+		return $configFile;
+	}
+
+	protected function _discoveryAllowed() {
+		$configFile = $this->_getConfig();
+		$config = $configFile->read();
+
+		return (isset($config['allowDiscovery'])) ? (bool) $config['allowDiscovery'] : false;
+	}
 
 	protected function _getOnlinePeerData(OnlinePeer $peer, $isAttached = false) {
 		$peerData = array(
 			'registered' => ($peer['userId'] !== null),
-			'online' => true
+			'online' => true,
+			'app' => $peer['app']
 		);
 
-		if ($isAttached) {
+		if ($isAttached || $this->_discoveryAllowed()) {
 			$peerData['userId'] = $peer['userId'];
 			$peerData['peerId'] = $peer['id'];
 		}
@@ -53,7 +72,7 @@ class PeerController extends ApiBackController {
 		$offlinePeerData = array();
 		$onlinePeerData = array();
 		if (!empty($offlinePeer)) {
-			if ($offlinePeer['public']) {
+			if ($offlinePeer['isPublic']) {
 				$isAttached = true;
 			}
 			$offlinePeerData = $this->_getOfflinePeerData($offlinePeer, $isAttached);
@@ -64,7 +83,7 @@ class PeerController extends ApiBackController {
 
 		$peerData = array_merge($offlinePeerData, $onlinePeerData);
 
-		if (isset($peerData['userId']) && $isAttached) {
+		if (isset($peerData['userId']) && ($isAttached || $this->_discoveryAllowed())) {
 			$peerUser = $userManager->getById($peerData['userId']);
 			if (!empty($peerUser)) {
 				$peerData['user'] = array(
@@ -88,12 +107,19 @@ class PeerController extends ApiBackController {
 		return $peerLinkData;		
 	}
 
+
+	public function __construct(Api $app, $module, $action) {
+		parent::__construct($app, $module, $action);
+
+		$this->listenEvents();
+	}
+
 	// GETTERS
 
 	// Peers
 
 	public function executeListPeers($appName = null) {
-		$server = $this->peerServer();
+		$server = &$this->peerServer();
 		$manager = $this->managers()->getManagerOf('peer');
 		$peerLinkManager = $this->managers()->getManagerOf('peerLink');
 		$user = $this->app()->user();
@@ -125,7 +151,7 @@ class PeerController extends ApiBackController {
 	}
 
 	public function executeGetPeer($peerId) {
-		$server = $this->peerServer();
+		$server = &$this->peerServer();
 
 		$onlinePeer = $server->getPeer($peerId);
 		$peerData = $this->_getPeerData($onlinePeer, null, true);
@@ -138,7 +164,7 @@ class PeerController extends ApiBackController {
 	}
 
 	public function executeGetPeerByUserAndApp($userId, $appName) {
-		$server = $this->peerServer();
+		$server = &$this->peerServer();
 		$manager = $this->managers()->getManagerOf('peer');
 		$peerLinkManager = $this->managers()->getManagerOf('peerLink');
 		$user = $this->app()->user();
@@ -170,7 +196,7 @@ class PeerController extends ApiBackController {
 
 	public function executeListPeersLinks($appName = null) {
 		try {
-			$server = $this->peerServer(); //TODO: works without peer server
+			$server = &$this->peerServer(); //TODO: works without peer server
 		} catch (\Exception $e) {
 			$server = null;
 		}
@@ -204,7 +230,7 @@ class PeerController extends ApiBackController {
 
 	public function executeListLinkedPeers($appName = null) {
 		try {
-			$server = $this->peerServer(); //TODO: works without peer server
+			$server = &$this->peerServer(); //TODO: works without peer server
 		} catch (\Exception $e) {
 			$server = null;
 		}
@@ -238,21 +264,20 @@ class PeerController extends ApiBackController {
 
 				$isAttached = $peerLink['confirmed'];
 
-				$onlinePeer = null;
+				$onlinePeers = array(null);
 				if (!empty($server)) {
 					$onlinePeers = $server->listPeersByUser($offlinePeer['userId']);
-
-					if (count($onlinePeers) == 1) {
-						$onlinePeer = $onlinePeers[0];
-					}
-					if (count($onlinePeers) > 1) { //TODO: online peers app name
-						$onlinePeer = $onlinePeers[0];
-					}
 				}
 
-				$peerData = $this->_getPeerData($onlinePeer, $offlinePeer, $isAttached);
-				if (!in_array($peerData, $list)) { //Avoid duplicates
-					$list[] = $peerData;
+				foreach ($onlinePeers as $onlinePeer) {
+					if (!empty($onlinePeer) && !empty($appName) && $onlinePeer['app'] != $appName) {
+						continue;
+					}
+
+					$peerData = $this->_getPeerData($onlinePeer, $offlinePeer, $isAttached);
+					if (!in_array($peerData, $list)) { //Avoid duplicates
+						$list[] = $peerData;
+					}
 				}
 			}
 		}
@@ -260,10 +285,72 @@ class PeerController extends ApiBackController {
 		return $list;
 	}
 
+	// Events
+	
+	protected function listenEvents() {
+		$peerServer = &$this->peerServer();
+
+		// Do not listen multiple times events
+		// Each time a PeerController is created (each request to this controller),
+		// this method is called
+		// TODO: do this in a separate class which supports better asynchronous systems
+		// OR workaround with Application to instanciate each controller only one time
+		$listeners = $peerServer->listeners('peer.updated');
+		if (count($listeners) > 0) {
+			foreach ($listeners as $listener) {
+				if (is_array($listener) && $listener[0] instanceof $this) {
+					return;
+				}
+			}
+		}
+
+		$peerServer->on('peer.updated', array($this, 'onPeerUpdated'));
+		$peerServer->on('peer.deleted', array($this, 'onPeerUpdated'));
+	}
+
+	//TODO: don't know when triggering this function
+	protected function stopListeningEvents() {
+		$peerServer = &$this->peerServer();
+
+		$peerServer->removeListener('peer.updated', array($this, 'onPeerUpdated'));
+		$peerServer->removeListener('peer.deleted', array($this, 'onPeerUpdated'));
+	}
+
+	public function onPeerUpdated(OnlinePeer $peer) {
+		try {
+			$apiServer = &$this->apiServer();
+		} catch (\Exception $e) {
+			return;
+		}
+
+		$apiServer->publish('peer.list.'.$peer['app'], array(
+			'list' => $this->executeListPeers($peer['app'])
+		));
+	}
+
 	// SETTERS
 
 	// Peers
 	
+	public function executeAttachPeer($peerId, $appName = null) {
+		$server = &$this->peerServer();
+		$user = $this->app()->user();
+
+		$onlinePeer = $server->getPeer($peerId);
+		if (empty($onlinePeer)) {
+			throw new RuntimeException('Cannot find peer with id "'.$peerId.'"', 404);
+		}
+
+		if ($user->isLogged()) {
+			$onlinePeer['userId'] = $user->id();
+		}
+		if (!empty($appName)) {
+			$onlinePeer['app'] = $appName;
+		}
+		
+		$server->updatePeer($onlinePeer);
+	}
+
 	public function executeRegisterPeer(array $peerData) {
 		$peerLinkManager = $this->managers()->getManagerOf('peerLink');
 		$user = $this->app()->user();
@@ -274,7 +361,7 @@ class PeerController extends ApiBackController {
 
 		$peerData = array(
 			'userId' => $user->id(),
-			'public' => (isset($peerData['public']) && $peerData['public']) ? true : false,
+			'isPublic' => (isset($peerData['isPublic']) && $peerData['isPublic']) ? true : false,
 			'app' => (string) $peerData['app']
 		);
 
@@ -366,11 +453,23 @@ class PeerController extends ApiBackController {
 		self::$peerServer = $peerServer;
 	}
 
-	protected function peerServer() {
+	public static function setApiServer(ApiWebSocketServer &$apiServer) {
+		self::$apiServer = $apiServer;
+	}
+
+	protected function &peerServer() {
 		if (empty(self::$peerServer)) {
-			throw new RuntimeException('Cannot contact PeerServer, please try again');
+			throw new RuntimeException('Cannot contact PeerServer from PeerController, please try again');
 		}
 
 		return self::$peerServer;
+	}
+
+	protected function &apiServer() {
+		if (empty(self::$apiServer)) {
+			throw new RuntimeException('Cannot contact ApiWebSocketServer from PeerController, please try again');
+		}
+
+		return self::$apiServer;
 	}
 }

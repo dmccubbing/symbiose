@@ -14,8 +14,6 @@ class HTTPRequest {
 	public function __construct(Session $session = null) {
 		if (!empty($session)) {
 			$this->session = $session;
-		} else {
-			$this->session = new Session();
 		}
 	}
 
@@ -86,6 +84,22 @@ class HTTPRequest {
 	public function requestURI()
 	{
 		return $_SERVER['REQUEST_URI'];
+	}
+
+	/**
+	 * Get the remote address (i.e. the client IP address).
+	 * @return string The IP address.
+	 */
+	public function remoteAddress() {
+		return $_SERVER['REMOTE_ADDR'];
+	}
+
+	/**
+	 * Get accepted languages.
+	 * @return string The Accept-Language HTTP header.
+	 */
+	public function acceptLanguage() {
+		return $_SERVER['HTTP_ACCEPT_LANGUAGE'];
 	}
 
 	/**

@@ -54,9 +54,13 @@ class App {
      * @param string        $address  IP address to bind to. Default is localhost/proxy only. '0.0.0.0' for any machine.
      * @param LoopInterface $loop     Specific React\EventLoop to bind the application to. null will create one for you.
      */
-    public function __construct($httpHost = 'localhost', $port = 8080, $address = '127.0.0.1', LoopInterface $loop = null) {
+    public function __construct($httpHost = 'localhost', $port = 8080, $address = '127.0.0.1', LoopInterface $loop = null, $context = array()) {
         if (extension_loaded('xdebug')) {
-            echo "XDebug extension detected. Remember to disable this if performance testing or going live!\n";
+            trigger_error("XDebug extension detected. Remember to disable this if performance testing or going live!", E_USER_WARNING);
+        }
+
+        if (3 !== strlen('✓')) {
+            throw new \DomainException('Bad encoding, length of unicode character ✓ should be 3. Ensure charset UTF-8 and check ini val mbstring.func_autoload');
         }
 
         if (null === $loop) {
@@ -65,15 +69,19 @@ class App {
 
         $this->httpHost = $httpHost;
 
-        $socket = new Reactor($loop);
+        $socket = new Reactor($loop, $context);
         $socket->listen($port, $address);
 
         $this->routes  = new RouteCollection;
         $this->_server = new IoServer(new HttpServer(new Router(new UrlMatcher($this->routes, new RequestContext))), $socket, $loop);
 
         $policy = new FlashPolicy;
-        $policy->addAllowedAccess($httpHost, 80);
-        $policy->addAllowedAccess($httpHost, $port);
+
+        if ('*' !== $httpHost) {
+            $policy->addAllowedAccess($httpHost, 80);
+            $policy->addAllowedAccess($httpHost, $port);
+        }
+
         $flashSock = new Reactor($loop);
         $this->flashServer = new IoServer($policy, $flashSock);
 
@@ -88,7 +96,7 @@ class App {
      * Add an endpiont/application to the server
      * @param string             $path The URI the client will connect to
      * @param ComponentInterface $controller Your application to server for the route. If not specified, assumed to be for a WebSocket
-     * @param array              $allowedOrigins An array of hosts allowed to connect (same host by default), [*] for any
+     * @param array              $allowedOrigins An array of hosts allowed to connect (same host by default), ['*'] for any
      * @param string             $httpHost Override the $httpHost variable provided in the __construct
      * @return ComponentInterface|WsServer
      */
@@ -103,7 +111,9 @@ class App {
             $decorated = $controller;
         }
 
-        $httpHost = $httpHost ?: $this->httpHost;
+        if ($httpHost === null) {
+            $httpHost = $this->httpHost;
+        }
 
         $allowedOrigins = array_values($allowedOrigins);
         if (0 === count($allowedOrigins)) {
@@ -113,7 +123,22 @@ class App {
             $decorated = new OriginCheck($decorated, $allowedOrigins);
         }
 
-        $this->routes->add('rr-' . ++$this->_routeCounter, new Route($path, array('_controller' => $decorated), array('Origin' => $this->httpHost), array(), $httpHost));
+        $route = null;
+        if ($path instanceof Route) {
+            $route = $path;
+            $route->setDefault('_controller', $decorated);
+        } else {
+            $route = new Route($path, array(
+                '_controller' => $decorated
+            ));
+        }
+
+        if ('*' !== $httpHost) {
+            $route->addRequirements(array('Origin' => $httpHost));
+            $route->setHost($httpHost);
+        }
+
+        $this->routes->add('rr-' . ++$this->_routeCounter, $route);
 
         return $decorated;
     }
